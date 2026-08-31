@@ -24,7 +24,6 @@ jobs:
 
       - name: Check JavaScript
         run: npm run check
-
       - name: Deploy to Cloudflare
         run: npx wrangler deploy
         env:

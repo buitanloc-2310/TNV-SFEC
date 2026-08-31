@@ -34,9 +34,12 @@ async function api(request, env, url) {
 
   if (url.pathname === '/api/status' && method === 'GET') {
     const admin = await env.DB
-      .prepare(
-        "SELECT id FROM users WHERE role = 'admin' LIMIT 1"
-      )
+      .prepare(`
+        SELECT id
+        FROM users
+        WHERE role = 'admin'
+        LIMIT 1
+      `)
       .first();
 
     return json({
@@ -45,16 +48,18 @@ async function api(request, env, url) {
     });
   }
 
-
   /* ======================================================
      KHỞI TẠO QUẢN TRỊ VIÊN ĐẦU TIÊN
   ====================================================== */
 
   if (url.pathname === '/api/setup' && method === 'POST') {
     const existing = await env.DB
-      .prepare(
-        "SELECT id FROM users WHERE role = 'admin' LIMIT 1"
-      )
+      .prepare(`
+        SELECT id
+        FROM users
+        WHERE role = 'admin'
+        LIMIT 1
+      `)
       .first();
 
     if (existing) {
@@ -107,31 +112,49 @@ async function api(request, env, url) {
 
     const { hash, salt } = await hashPassword(password);
 
-    await env.DB
-      .prepare(`
-        INSERT INTO users (
+    try {
+      await env.DB
+        .prepare(`
+          INSERT INTO users (
+            email,
+            full_name,
+            role,
+            password_hash,
+            salt,
+            status
+          )
+          VALUES (?, ?, 'admin', ?, ?, 'active')
+        `)
+        .bind(
           email,
-          full_name,
-          role,
-          password_hash,
-          salt,
-          status
+          fullName,
+          hash,
+          salt
         )
-        VALUES (?, ?, 'admin', ?, ?, 'active')
-      `)
-      .bind(
-        email,
-        fullName,
-        hash,
-        salt
-      )
-      .run();
+        .run();
+    } catch (error) {
+      if (
+        String(error)
+          .toLowerCase()
+          .includes('unique')
+      ) {
+        return json(
+          {
+            ok: false,
+            error: 'Email Quản trị viên đã tồn tại.'
+          },
+          409
+        );
+      }
+
+      throw error;
+    }
 
     return json({
-      ok: true
+      ok: true,
+      message: 'Khởi tạo hệ thống thành công.'
     });
   }
-
 
   /* ======================================================
      ĐĂNG NHẬP
@@ -156,6 +179,7 @@ async function api(request, env, url) {
     if (
       !user ||
       user.status !== 'active' ||
+      !user.salt ||
       !(await verifyPassword(
         password,
         user.salt,
@@ -171,15 +195,21 @@ async function api(request, env, url) {
       );
     }
 
-    /* Xóa session hết hạn */
+    /* Xóa các phiên đã hết hạn */
     await env.DB
       .prepare(`
         DELETE FROM sessions
-        WHERE expires_at <= datetime('now')
+        WHERE expires_at <= ?
       `)
+      .bind(new Date().toISOString())
       .run();
 
+    /*
+      Token thật chỉ được gửi về cookie.
+      D1 chỉ lưu SHA-256 của token.
+    */
     const token = randomToken(32);
+    const tokenHash = await hashSessionToken(token);
 
     const expiresAt = new Date(
       Date.now() + SESSION_DAYS * 86400000
@@ -188,15 +218,15 @@ async function api(request, env, url) {
     await env.DB
       .prepare(`
         INSERT INTO sessions (
-          token,
           user_id,
+          token_hash,
           expires_at
         )
         VALUES (?, ?, ?)
       `)
       .bind(
-        token,
         user.id,
+        tokenHash,
         expiresAt
       )
       .run();
@@ -216,7 +246,6 @@ async function api(request, env, url) {
     );
   }
 
-
   /* ======================================================
      ĐĂNG XUẤT
   ====================================================== */
@@ -228,12 +257,15 @@ async function api(request, env, url) {
     );
 
     if (token) {
+      const tokenHash =
+        await hashSessionToken(token);
+
       await env.DB
         .prepare(`
           DELETE FROM sessions
-          WHERE token = ?
+          WHERE token_hash = ?
         `)
-        .bind(token)
+        .bind(tokenHash)
         .run();
     }
 
@@ -247,7 +279,6 @@ async function api(request, env, url) {
       }
     );
   }
-
 
   /* ======================================================
      XÁC THỰC
@@ -268,7 +299,6 @@ async function api(request, env, url) {
     );
   }
 
-
   /* ======================================================
      HỒ SƠ NGƯỜI DÙNG
   ====================================================== */
@@ -279,7 +309,6 @@ async function api(request, env, url) {
       user: publicUser(user)
     });
   }
-
 
   /* ======================================================
      DASHBOARD
@@ -338,7 +367,6 @@ async function api(request, env, url) {
 
     return json({
       ok: true,
-
       stats: {
         activities:
           Number(registrations?.total || 0),
@@ -354,7 +382,6 @@ async function api(request, env, url) {
       }
     });
   }
-
 
   /* ======================================================
      CƠ HỘI TÌNH NGUYỆN / LỚP / SỰ KIỆN / TRAINING
@@ -403,10 +430,7 @@ async function api(request, env, url) {
           WHERE o.status = 'open'
             AND o.type = ?
           ORDER BY
-            COALESCE(
-              o.start_at,
-              o.created_at
-            ) ASC
+            COALESCE(o.start_at, o.created_at) ASC
         `)
         .bind(type);
     } else {
@@ -428,22 +452,17 @@ async function api(request, env, url) {
           ON u.id = o.unit_id
         WHERE o.status = 'open'
         ORDER BY
-          COALESCE(
-            o.start_at,
-            o.created_at
-          ) ASC
+          COALESCE(o.start_at, o.created_at) ASC
       `);
     }
 
-    const { results } =
-      await query.all();
+    const { results } = await query.all();
 
     return json({
       ok: true,
       items: results || []
     });
   }
-
 
   /* ======================================================
      ĐĂNG KÝ THAM GIA
@@ -453,8 +472,7 @@ async function api(request, env, url) {
     url.pathname === '/api/registrations' &&
     method === 'POST'
   ) {
-    const body =
-      await readJson(request);
+    const body = await readJson(request);
 
     const opportunityId =
       Number(body.opportunityId);
@@ -472,19 +490,18 @@ async function api(request, env, url) {
       );
     }
 
-    const opportunity =
-      await env.DB
-        .prepare(`
-          SELECT
-            id,
-            registration_deadline
-          FROM opportunities
-          WHERE id = ?
-            AND status = 'open'
-          LIMIT 1
-        `)
-        .bind(opportunityId)
-        .first();
+    const opportunity = await env.DB
+      .prepare(`
+        SELECT
+          id,
+          registration_deadline
+        FROM opportunities
+        WHERE id = ?
+          AND status = 'open'
+        LIMIT 1
+      `)
+      .bind(opportunityId)
+      .first();
 
     if (!opportunity) {
       return json(
@@ -496,19 +513,22 @@ async function api(request, env, url) {
       );
     }
 
-    if (
-      opportunity.registration_deadline &&
-      new Date(
-        opportunity.registration_deadline
-      ).getTime() < Date.now()
-    ) {
-      return json(
-        {
-          ok: false,
-          error: 'Đã hết thời hạn đăng ký.'
-        },
-        409
-      );
+    if (opportunity.registration_deadline) {
+      const deadline =
+        Date.parse(opportunity.registration_deadline);
+
+      if (
+        Number.isFinite(deadline) &&
+        deadline < Date.now()
+      ) {
+        return json(
+          {
+            ok: false,
+            error: 'Đã hết thời hạn đăng ký.'
+          },
+          409
+        );
+      }
     }
 
     try {
@@ -553,7 +573,6 @@ async function api(request, env, url) {
     });
   }
 
-
   /* ======================================================
      NHIỆM VỤ
   ====================================================== */
@@ -562,37 +581,35 @@ async function api(request, env, url) {
     url.pathname === '/api/tasks' &&
     method === 'GET'
   ) {
-    const { results } =
-      await env.DB
-        .prepare(`
-          SELECT
-            id,
-            opportunity_id,
-            title,
-            description,
-            due_at,
-            status,
-            created_at
-          FROM tasks
-          WHERE user_id = ?
-          ORDER BY
-            CASE status
-              WHEN 'doing' THEN 0
-              WHEN 'todo' THEN 1
-              WHEN 'done' THEN 2
-              ELSE 3
-            END,
-            due_at ASC
-        `)
-        .bind(user.id)
-        .all();
+    const { results } = await env.DB
+      .prepare(`
+        SELECT
+          id,
+          opportunity_id,
+          title,
+          description,
+          due_at,
+          status,
+          created_at
+        FROM tasks
+        WHERE user_id = ?
+        ORDER BY
+          CASE status
+            WHEN 'doing' THEN 0
+            WHEN 'todo' THEN 1
+            WHEN 'done' THEN 2
+            ELSE 3
+          END,
+          due_at ASC
+      `)
+      .bind(user.id)
+      .all();
 
     return json({
       ok: true,
       items: results || []
     });
   }
-
 
   /* ======================================================
      GIẤY CHỨNG NHẬN
@@ -602,27 +619,26 @@ async function api(request, env, url) {
     url.pathname === '/api/certificates' &&
     method === 'GET'
   ) {
-    const { results } =
-      await env.DB
-        .prepare(`
-          SELECT
-            code,
-            title,
-            issued_at,
-            status
-          FROM certificates
-          WHERE user_id = ?
-          ORDER BY issued_at DESC
-        `)
-        .bind(user.id)
-        .all();
+    const { results } = await env.DB
+      .prepare(`
+        SELECT
+          code,
+          title,
+          issued_at,
+          status,
+          file_url
+        FROM certificates
+        WHERE user_id = ?
+        ORDER BY issued_at DESC
+      `)
+      .bind(user.id)
+      .all();
 
     return json({
       ok: true,
       items: results || []
     });
   }
-
 
   /* ======================================================
      THÔNG BÁO
@@ -632,22 +648,21 @@ async function api(request, env, url) {
     url.pathname === '/api/notifications' &&
     method === 'GET'
   ) {
-    const { results } =
-      await env.DB
-        .prepare(`
-          SELECT
-            id,
-            title,
-            message,
-            is_read,
-            created_at
-          FROM notifications
-          WHERE user_id = ?
-          ORDER BY created_at DESC
-          LIMIT 100
-        `)
-        .bind(user.id)
-        .all();
+    const { results } = await env.DB
+      .prepare(`
+        SELECT
+          id,
+          title,
+          message,
+          is_read,
+          created_at
+        FROM notifications
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+        LIMIT 100
+      `)
+      .bind(user.id)
+      .all();
 
     return json({
       ok: true,
@@ -655,40 +670,37 @@ async function api(request, env, url) {
     });
   }
 
-
   /* ======================================================
-     TÀI LIỆU
+     TÀI LIỆU TNV
   ====================================================== */
 
   if (
     url.pathname === '/api/documents' &&
     method === 'GET'
   ) {
-    const { results } =
-      await env.DB
-        .prepare(`
-          SELECT
-            d.id,
-            d.title,
-            d.description,
-            d.file_url,
-            d.created_at,
-            d.unit_id,
-            u.name AS unit_name
-          FROM documents d
-          LEFT JOIN units u
-            ON u.id = d.unit_id
-          WHERE d.status = 'published'
-          ORDER BY d.created_at DESC
-        `)
-        .all();
+    const { results } = await env.DB
+      .prepare(`
+        SELECT
+          d.id,
+          d.title,
+          d.description,
+          d.file_url,
+          d.created_at,
+          d.unit_id,
+          u.name AS unit_name
+        FROM documents d
+        LEFT JOIN units u
+          ON u.id = d.unit_id
+        WHERE d.status = 'active'
+        ORDER BY d.created_at DESC
+      `)
+      .all();
 
     return json({
       ok: true,
       items: results || []
     });
   }
-
 
   /* ======================================================
      GỬI YÊU CẦU HỖ TRỢ
@@ -698,8 +710,7 @@ async function api(request, env, url) {
     url.pathname === '/api/support' &&
     method === 'POST'
   ) {
-    const body =
-      await readJson(request);
+    const body = await readJson(request);
 
     const subject =
       clean(body.subject, 180);
@@ -737,21 +748,15 @@ async function api(request, env, url) {
 
     return json({
       ok: true,
-      message:
-        'Yêu cầu hỗ trợ đã được gửi.'
+      message: 'Yêu cầu hỗ trợ đã được gửi.'
     });
   }
-
 
   /* ======================================================
      QUẢN TRỊ
   ====================================================== */
 
-  if (
-    url.pathname.startsWith(
-      '/api/admin/'
-    )
-  ) {
+  if (url.pathname.startsWith('/api/admin/')) {
     if (user.role !== 'admin') {
       return json(
         {
@@ -763,31 +768,28 @@ async function api(request, env, url) {
       );
     }
 
-
-    /* ------------------------------------------------------
+    /* ====================================================
        DANH SÁCH TÀI KHOẢN
-    ------------------------------------------------------ */
+    ==================================================== */
 
     if (
-      url.pathname ===
-        '/api/admin/users' &&
+      url.pathname === '/api/admin/users' &&
       method === 'GET'
     ) {
-      const { results } =
-        await env.DB
-          .prepare(`
-            SELECT
-              id,
-              email,
-              full_name,
-              role,
-              status,
-              created_at,
-              updated_at
-            FROM users
-            ORDER BY created_at DESC
-          `)
-          .all();
+      const { results } = await env.DB
+        .prepare(`
+          SELECT
+            id,
+            email,
+            full_name,
+            role,
+            status,
+            created_at,
+            updated_at
+          FROM users
+          ORDER BY created_at DESC
+        `)
+        .all();
 
       return json({
         ok: true,
@@ -795,18 +797,15 @@ async function api(request, env, url) {
       });
     }
 
-
-    /* ------------------------------------------------------
+    /* ====================================================
        CẤP TÀI KHOẢN TNV
-    ------------------------------------------------------ */
+    ==================================================== */
 
     if (
-      url.pathname ===
-        '/api/admin/users' &&
+      url.pathname === '/api/admin/users' &&
       method === 'POST'
     ) {
-      const body =
-        await readJson(request);
+      const body = await readJson(request);
 
       const email =
         normalizeEmail(body.email);
@@ -900,30 +899,27 @@ async function api(request, env, url) {
       });
     }
 
-
-    /* ------------------------------------------------------
+    /* ====================================================
        DANH SÁCH ĐƠN VỊ
-    ------------------------------------------------------ */
+    ==================================================== */
 
     if (
-      url.pathname ===
-        '/api/admin/units' &&
+      url.pathname === '/api/admin/units' &&
       method === 'GET'
     ) {
-      const { results } =
-        await env.DB
-          .prepare(`
-            SELECT
-              id,
-              name,
-              code,
-              description,
-              status,
-              created_at
-            FROM units
-            ORDER BY name ASC
-          `)
-          .all();
+      const { results } = await env.DB
+        .prepare(`
+          SELECT
+            id,
+            name,
+            code,
+            description,
+            status,
+            created_at
+          FROM units
+          ORDER BY name ASC
+        `)
+        .all();
 
       return json({
         ok: true,
@@ -931,18 +927,15 @@ async function api(request, env, url) {
       });
     }
 
-
-    /* ------------------------------------------------------
+    /* ====================================================
        TẠO ĐƠN VỊ
-    ------------------------------------------------------ */
+    ==================================================== */
 
     if (
-      url.pathname ===
-        '/api/admin/units' &&
+      url.pathname === '/api/admin/units' &&
       method === 'POST'
     ) {
-      const body =
-        await readJson(request);
+      const body = await readJson(request);
 
       const name =
         clean(body.name, 180);
@@ -1002,22 +995,20 @@ async function api(request, env, url) {
       }
 
       return json({
-        ok: true
+        ok: true,
+        message: 'Đơn vị đã được tạo.'
       });
     }
 
-
-    /* ------------------------------------------------------
+    /* ====================================================
        TẠO NỘI DUNG ĐĂNG KÝ
-    ------------------------------------------------------ */
+    ==================================================== */
 
     if (
-      url.pathname ===
-        '/api/admin/opportunities' &&
+      url.pathname === '/api/admin/opportunities' &&
       method === 'POST'
     ) {
-      const body =
-        await readJson(request);
+      const body = await readJson(request);
 
       const type =
         String(body.type || '');
@@ -1053,8 +1044,7 @@ async function api(request, env, url) {
         body.unitId !== null &&
         body.unitId !== ''
       ) {
-        unitId =
-          Number(body.unitId);
+        unitId = Number(body.unitId);
 
         if (
           !Number.isInteger(unitId) ||
@@ -1070,17 +1060,16 @@ async function api(request, env, url) {
           );
         }
 
-        const unit =
-          await env.DB
-            .prepare(`
-              SELECT id
-              FROM units
-              WHERE id = ?
-                AND status = 'active'
-              LIMIT 1
-            `)
-            .bind(unitId)
-            .first();
+        const unit = await env.DB
+          .prepare(`
+            SELECT id
+            FROM units
+            WHERE id = ?
+              AND status = 'active'
+            LIMIT 1
+          `)
+          .bind(unitId)
+          .first();
 
         if (!unit) {
           return json(
@@ -1092,6 +1081,32 @@ async function api(request, env, url) {
             404
           );
         }
+      }
+
+      const startAt =
+        nullableText(body.startAt);
+
+      const endAt =
+        nullableText(body.endAt);
+
+      const registrationDeadline =
+        nullableText(
+          body.registrationDeadline
+        );
+
+      if (
+        startAt &&
+        endAt &&
+        Date.parse(startAt) > Date.parse(endAt)
+      ) {
+        return json(
+          {
+            ok: false,
+            error:
+              'Thời gian kết thúc phải sau thời gian bắt đầu.'
+          },
+          400
+        );
       }
 
       await env.DB
@@ -1127,15 +1142,9 @@ async function api(request, env, url) {
             body.description,
             1500
           ) || null,
-          nullableText(
-            body.startAt
-          ),
-          nullableText(
-            body.endAt
-          ),
-          nullableText(
-            body.registrationDeadline
-          ),
+          startAt,
+          endAt,
+          registrationDeadline,
           user.id
         )
         .run();
@@ -1147,49 +1156,47 @@ async function api(request, env, url) {
       });
     }
 
-
-    /* ------------------------------------------------------
-       DANH SÁCH ĐĂNG KÝ CHỜ DUYỆT
-    ------------------------------------------------------ */
+    /* ====================================================
+       DANH SÁCH ĐĂNG KÝ
+    ==================================================== */
 
     if (
       url.pathname ===
         '/api/admin/registrations' &&
       method === 'GET'
     ) {
-      const { results } =
-        await env.DB
-          .prepare(`
-            SELECT
-              r.id,
-              r.status,
-              r.note,
-              r.created_at,
+      const { results } = await env.DB
+        .prepare(`
+          SELECT
+            r.id,
+            r.status,
+            r.note,
+            r.created_at,
 
-              u.id AS user_id,
-              u.full_name,
-              u.email,
+            u.id AS user_id,
+            u.full_name,
+            u.email,
 
-              o.id AS opportunity_id,
-              o.title AS opportunity_title,
-              o.type AS opportunity_type
+            o.id AS opportunity_id,
+            o.title AS opportunity_title,
+            o.type AS opportunity_type
 
-            FROM registrations r
+          FROM registrations r
 
-            JOIN users u
-              ON u.id = r.user_id
+          JOIN users u
+            ON u.id = r.user_id
 
-            JOIN opportunities o
-              ON o.id = r.opportunity_id
+          JOIN opportunities o
+            ON o.id = r.opportunity_id
 
-            ORDER BY
-              CASE r.status
-                WHEN 'pending' THEN 0
-                ELSE 1
-              END,
-              r.created_at DESC
-          `)
-          .all();
+          ORDER BY
+            CASE r.status
+              WHEN 'pending' THEN 0
+              ELSE 1
+            END,
+            r.created_at DESC
+        `)
+        .all();
 
       return json({
         ok: true,
@@ -1197,10 +1204,9 @@ async function api(request, env, url) {
       });
     }
 
-
-    /* ------------------------------------------------------
+    /* ====================================================
        DUYỆT / TỪ CHỐI ĐĂNG KÝ
-    ------------------------------------------------------ */
+    ==================================================== */
 
     const registrationMatch =
       url.pathname.match(
@@ -1212,9 +1218,7 @@ async function api(request, env, url) {
       method === 'PATCH'
     ) {
       const registrationId =
-        Number(
-          registrationMatch[1]
-        );
+        Number(registrationMatch[1]);
 
       const body =
         await readJson(request);
@@ -1239,23 +1243,22 @@ async function api(request, env, url) {
         );
       }
 
-      const result =
-        await env.DB
-          .prepare(`
-            UPDATE registrations
-            SET
-              status = ?,
-              reviewed_by = ?,
-              reviewed_at = CURRENT_TIMESTAMP,
-              updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-          `)
-          .bind(
-            status,
-            user.id,
-            registrationId
-          )
-          .run();
+      const result = await env.DB
+        .prepare(`
+          UPDATE registrations
+          SET
+            status = ?,
+            reviewed_by = ?,
+            reviewed_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `)
+        .bind(
+          status,
+          user.id,
+          registrationId
+        )
+        .run();
 
       if (!result.meta?.changes) {
         return json(
@@ -1269,29 +1272,28 @@ async function api(request, env, url) {
       }
 
       return json({
-        ok: true
+        ok: true,
+        message:
+          'Đã cập nhật trạng thái đăng ký.'
       });
     }
   }
 
-
   /* ======================================================
-     KHÔNG TÌM THẤY API
+     API KHÔNG TỒN TẠI
   ====================================================== */
 
   return json(
     {
       ok: false,
-      error:
-        'Không tìm thấy chức năng.'
+      error: 'Không tìm thấy chức năng.'
     },
     404
   );
 }
 
-
 /* ========================================================
-   AUTH HELPERS
+   AUTH
 ======================================================== */
 
 async function requireUser(
@@ -1308,27 +1310,31 @@ async function requireUser(
     return null;
   }
 
-  const row =
-    await env.DB
-      .prepare(`
-        SELECT u.*
-        FROM sessions s
+  const tokenHash =
+    await hashSessionToken(token);
 
-        JOIN users u
-          ON u.id = s.user_id
+  const row = await env.DB
+    .prepare(`
+      SELECT u.*
+      FROM sessions s
 
-        WHERE s.token = ?
-          AND s.expires_at > datetime('now')
-          AND u.status = 'active'
+      JOIN users u
+        ON u.id = s.user_id
 
-        LIMIT 1
-      `)
-      .bind(token)
-      .first();
+      WHERE s.token_hash = ?
+        AND s.expires_at > ?
+        AND u.status = 'active'
+
+      LIMIT 1
+    `)
+    .bind(
+      tokenHash,
+      new Date().toISOString()
+    )
+    .first();
 
   return row || null;
 }
-
 
 function publicUser(user) {
   return {
@@ -1340,7 +1346,6 @@ function publicUser(user) {
   };
 }
 
-
 /* ========================================================
    VALIDATION
 ======================================================== */
@@ -1351,13 +1356,11 @@ function normalizeEmail(value) {
     .toLowerCase();
 }
 
-
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
     email
   );
 }
-
 
 function clean(value, max) {
   return String(value || '')
@@ -1365,14 +1368,12 @@ function clean(value, max) {
     .slice(0, max);
 }
 
-
 function nullableText(value) {
   const text =
     String(value || '').trim();
 
   return text || null;
 }
-
 
 function validatePassword(password) {
   if (password.length < 10) {
@@ -1394,9 +1395,8 @@ function validatePassword(password) {
   return '';
 }
 
-
 /* ========================================================
-   REQUEST HELPERS
+   REQUEST
 ======================================================== */
 
 async function readJson(request) {
@@ -1407,7 +1407,6 @@ async function readJson(request) {
   }
 }
 
-
 function getCookie(
   request,
   name
@@ -1415,22 +1414,23 @@ function getCookie(
   const cookieHeader =
     request.headers.get('Cookie') || '';
 
-  for (
-    const part of cookieHeader.split(';')
-  ) {
+  for (const part of cookieHeader.split(';')) {
     const [key, ...value] =
       part.trim().split('=');
 
     if (key === name) {
-      return decodeURIComponent(
-        value.join('=')
-      );
+      try {
+        return decodeURIComponent(
+          value.join('=')
+        );
+      } catch {
+        return '';
+      }
     }
   }
 
   return '';
 }
-
 
 /* ========================================================
    SESSION
@@ -1455,7 +1455,6 @@ function sessionCookie(
   ].join('; ');
 }
 
-
 function randomToken(bytes) {
   const array =
     new Uint8Array(bytes);
@@ -1465,6 +1464,20 @@ function randomToken(bytes) {
   return base64Url(array);
 }
 
+async function hashSessionToken(token) {
+  const data =
+    new TextEncoder().encode(token);
+
+  const digest =
+    await crypto.subtle.digest(
+      'SHA-256',
+      data
+    );
+
+  return base64Url(
+    new Uint8Array(digest)
+  );
+}
 
 function base64Url(bytes) {
   let binary = '';
@@ -1480,7 +1493,6 @@ function base64Url(bytes) {
     .replace(/=+$/g, '');
 }
 
-
 /* ========================================================
    PASSWORD
 ======================================================== */
@@ -1491,9 +1503,7 @@ async function hashPassword(
 ) {
   const salt =
     saltBase64
-      ? decodeBase64(
-          saltBase64
-        )
+      ? decodeBase64(saltBase64)
       : crypto.getRandomValues(
           new Uint8Array(16)
         );
@@ -1525,17 +1535,19 @@ async function hashPassword(
     hash: base64(
       new Uint8Array(bits)
     ),
-
     salt: base64(salt)
   };
 }
-
 
 async function verifyPassword(
   password,
   salt,
   expected
 ) {
+  if (!salt || !expected) {
+    return false;
+  }
+
   const calculated =
     await hashPassword(
       password,
@@ -1548,7 +1560,6 @@ async function verifyPassword(
   );
 }
 
-
 function base64(bytes) {
   let binary = '';
 
@@ -1560,7 +1571,6 @@ function base64(bytes) {
   return btoa(binary);
 }
 
-
 function decodeBase64(value) {
   return Uint8Array.from(
     atob(value),
@@ -1568,7 +1578,6 @@ function decodeBase64(value) {
       character.charCodeAt(0)
   );
 }
-
 
 function timingSafe(a, b) {
   if (
@@ -1594,7 +1603,6 @@ function timingSafe(a, b) {
   return result === 0;
 }
 
-
 /* ========================================================
    RESPONSE
 ======================================================== */
@@ -1608,14 +1616,11 @@ function json(
     JSON.stringify(data),
     {
       status,
-
       headers: {
         'Content-Type':
           'application/json; charset=utf-8',
-
         'Cache-Control':
           'no-store',
-
         ...headers
       }
     }

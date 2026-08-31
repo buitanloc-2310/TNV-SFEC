@@ -17,7 +17,12 @@ export default {
       return json(
         {
           ok: false,
-          error: 'Lỗi hệ thống. Vui lòng thử lại.'
+          error: 'Lỗi hệ thống.',
+          details: String(
+            error?.message ||
+            error?.stack ||
+            error
+          )
         },
         500
       );
@@ -195,7 +200,6 @@ async function api(request, env, url) {
       );
     }
 
-    /* Xóa các phiên đã hết hạn */
     await env.DB
       .prepare(`
         DELETE FROM sessions
@@ -204,10 +208,6 @@ async function api(request, env, url) {
       .bind(new Date().toISOString())
       .run();
 
-    /*
-      Token thật chỉ được gửi về cookie.
-      D1 chỉ lưu SHA-256 của token.
-    */
     const token = randomToken(32);
     const tokenHash = await hashSessionToken(token);
 
@@ -257,8 +257,7 @@ async function api(request, env, url) {
     );
 
     if (token) {
-      const tokenHash =
-        await hashSessionToken(token);
+      const tokenHash = await hashSessionToken(token);
 
       await env.DB
         .prepare(`
@@ -384,7 +383,7 @@ async function api(request, env, url) {
   }
 
   /* ======================================================
-     CƠ HỘI TÌNH NGUYỆN / LỚP / SỰ KIỆN / TRAINING
+     CƠ HỘI TÌNH NGUYỆN
   ====================================================== */
 
   if (
@@ -401,9 +400,7 @@ async function api(request, env, url) {
       'training'
     ];
 
-    const type = allowedTypes.includes(
-      requestedType
-    )
+    const type = allowedTypes.includes(requestedType)
       ? requestedType
       : null;
 
@@ -671,7 +668,7 @@ async function api(request, env, url) {
   }
 
   /* ======================================================
-     TÀI LIỆU TNV
+     TÀI LIỆU
   ====================================================== */
 
   if (
@@ -703,7 +700,7 @@ async function api(request, env, url) {
   }
 
   /* ======================================================
-     GỬI YÊU CẦU HỖ TRỢ
+     HỖ TRỢ
   ====================================================== */
 
   if (
@@ -768,9 +765,7 @@ async function api(request, env, url) {
       );
     }
 
-    /* ====================================================
-       DANH SÁCH TÀI KHOẢN
-    ==================================================== */
+    /* DANH SÁCH TÀI KHOẢN */
 
     if (
       url.pathname === '/api/admin/users' &&
@@ -797,9 +792,7 @@ async function api(request, env, url) {
       });
     }
 
-    /* ====================================================
-       CẤP TÀI KHOẢN TNV
-    ==================================================== */
+    /* CẤP TÀI KHOẢN TNV */
 
     if (
       url.pathname === '/api/admin/users' &&
@@ -899,9 +892,7 @@ async function api(request, env, url) {
       });
     }
 
-    /* ====================================================
-       DANH SÁCH ĐƠN VỊ
-    ==================================================== */
+    /* DANH SÁCH ĐƠN VỊ */
 
     if (
       url.pathname === '/api/admin/units' &&
@@ -927,9 +918,7 @@ async function api(request, env, url) {
       });
     }
 
-    /* ====================================================
-       TẠO ĐƠN VỊ
-    ==================================================== */
+    /* TẠO ĐƠN VỊ */
 
     if (
       url.pathname === '/api/admin/units' &&
@@ -1000,9 +989,7 @@ async function api(request, env, url) {
       });
     }
 
-    /* ====================================================
-       TẠO NỘI DUNG ĐĂNG KÝ
-    ==================================================== */
+    /* TẠO NỘI DUNG ĐĂNG KÝ */
 
     if (
       url.pathname === '/api/admin/opportunities' &&
@@ -1097,6 +1084,8 @@ async function api(request, env, url) {
       if (
         startAt &&
         endAt &&
+        Number.isFinite(Date.parse(startAt)) &&
+        Number.isFinite(Date.parse(endAt)) &&
         Date.parse(startAt) > Date.parse(endAt)
       ) {
         return json(
@@ -1156,9 +1145,7 @@ async function api(request, env, url) {
       });
     }
 
-    /* ====================================================
-       DANH SÁCH ĐĂNG KÝ
-    ==================================================== */
+    /* DANH SÁCH ĐĂNG KÝ */
 
     if (
       url.pathname ===
@@ -1204,9 +1191,7 @@ async function api(request, env, url) {
       });
     }
 
-    /* ====================================================
-       DUYỆT / TỪ CHỐI ĐĂNG KÝ
-    ==================================================== */
+    /* DUYỆT / TỪ CHỐI */
 
     const registrationMatch =
       url.pathname.match(

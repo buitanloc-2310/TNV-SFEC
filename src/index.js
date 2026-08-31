@@ -1510,7 +1510,7 @@ async function hashPassword(
         name: 'PBKDF2',
         hash: 'SHA-256',
         salt,
-        iterations: 210000
+        iterations: 100000
       },
       key,
       256

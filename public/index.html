@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Cổng Tình nguyện viên của Mạng lưới Giáo dục & Phát triển Cộng đồng Sky First (SFN)">
+<title>Cổng Tình nguyện viên | Sky First Network</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div id="toast" class="toast" role="status"></div>
+
+<section id="authView" class="auth-view">
+  <div class="auth-brand"><img src="/assets/logo-sfn.png" alt="Sky First"><p>CỔNG TÌNH NGUYỆN VIÊN</p></div>
+  <div class="auth-card">
+    <div id="loginPane">
+      <p class="kicker">SKY FIRST NETWORK</p><h1>Đăng nhập</h1>
+      <p class="muted">Sử dụng tài khoản do Quản trị viên SFN cấp.</p>
+      <form id="loginForm" class="form">
+        <label>Email<input id="loginEmail" type="email" autocomplete="username" required></label>
+        <label>Mật khẩu<input id="loginPassword" type="password" autocomplete="current-password" required></label>
+        <button class="btn primary" type="submit">Đăng nhập</button>
+      </form>
+      <button id="showSetup" class="text-btn hidden" type="button">Thiết lập Quản trị viên lần đầu</button>
+    </div>
+    <div id="setupPane" class="hidden">
+      <p class="kicker">THIẾT LẬP LẦN ĐẦU</p><h1>Tạo Quản trị viên gốc</h1>
+      <p class="muted">Chỉ thực hiện một lần. Email Quản trị viên gốc: <b>skyfirst.ec@gmail.com</b>.</p>
+      <form id="setupForm" class="form">
+        <label>Họ và tên<input id="setupName" required maxlength="120"></label>
+        <label>Email<input id="setupEmail" type="email" value="skyfirst.ec@gmail.com" readonly></label>
+        <label>Mật khẩu mới<input id="setupPassword" type="password" autocomplete="new-password" required minlength="10"></label>
+        <label>Nhập lại mật khẩu<input id="setupPassword2" type="password" autocomplete="new-password" required minlength="10"></label>
+        <button class="btn primary" type="submit">Khởi tạo hệ thống</button>
+      </form>
+      <button id="backLogin" class="text-btn" type="button">Quay lại đăng nhập</button>
+    </div>
+  </div>
+  <div class="auth-contact">www.skyfirst.io.vn · skyfirst.ec@gmail.com · Hotline/Zalo: 0924 910 210</div>
+</section>
+
+<div id="appView" class="app hidden">
+  <aside class="sidebar" id="sidebar">
+    <div class="side-logo"><img src="/assets/logo-sfn.png" alt="Sky First"></div>
+    <nav>
+      <a class="nav-link active" href="#home">Tổng quan</a>
+      <a class="nav-link" href="#opportunities">Cơ hội tình nguyện</a>
+      <button class="nav-link dropdown-toggle" data-target="registerMenu">Đăng ký tham gia <span>⌄</span></button>
+      <div id="registerMenu" class="subnav">
+        <button data-type="class">Các lớp học</button><button data-type="activity">Hoạt động</button><button data-type="event">Sự kiện</button><button data-type="training">Đào tạo / Training</button>
+      </div>
+      <a class="nav-link" href="#tasks">Nhiệm vụ & Phân công</a>
+      <a class="nav-link" href="#calendar">Lịch hoạt động</a>
+      <a class="nav-link" href="#contribution">Ghi nhận đóng góp</a>
+      <a class="nav-link" href="#certificates">Giấy chứng nhận</a>
+      <a class="nav-link" href="#documents">Tài liệu TNV</a>
+      <a class="nav-link" href="#support">Hỗ trợ</a>
+      <a class="nav-link" href="#profile">Hồ sơ cá nhân</a>
+      <button id="adminMenuBtn" class="nav-link hidden">Quản trị hệ thống</button>
+    </nav>
+    <div class="sidebar-contact"><b>Sky First Network (SFN)</b><br>Mạng lưới Giáo dục & Phát triển Cộng đồng<br><br>Hotline/Zalo: 0924 910 210</div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar"><button id="menuBtn" class="menu-btn">Menu</button><div><strong>Cổng Tình nguyện viên</strong><span id="topSubtitle">Sky First Network</span></div><div class="account"><div><b id="userName"></b><small id="userRole"></small></div><button id="logoutBtn" class="btn ghost">Đăng xuất</button></div></header>
+    <div class="content">
+      <section class="hero" id="home"><div><p class="kicker">CỔNG TÌNH NGUYỆN VIÊN SFN</p><h1>Tham gia. Phối hợp. Ghi nhận hành trình đóng góp.</h1><p>Không gian làm việc dành cho tình nguyện viên trong toàn hệ thống Sky First: đăng ký lớp học và hoạt động, nhận phân công, theo dõi lịch, ghi nhận đóng góp và quản lý giấy chứng nhận.</p><div class="hero-actions"><button class="btn primary open-register" data-type="activity">Xem hoạt động đang mở</button><button class="btn secondary open-register" data-type="class">Đăng ký lớp học</button></div></div><img src="/assets/logo-sfn.png" alt="Sky First"></section>
+
+      <section class="stats"><article><span>Hoạt động đã duyệt</span><b id="statActivities">0</b></article><article><span>Nhiệm vụ đang xử lý</span><b id="statTasks">0</b></article><article><span>Đóng góp đã xác nhận</span><b id="statHours">0 giờ</b></article><article><span>Giấy chứng nhận</span><b id="statCertificates">0</b></article></section>
+
+      <div class="layout">
+        <div>
+          <section class="panel" id="opportunities"><div class="section-head"><div><p class="kicker">ĐANG MỞ</p><h2>Cơ hội & nội dung đăng ký</h2></div><button class="text-btn" id="refreshOpp">Làm mới</button></div><div id="opportunityList" class="cards"><div class="empty">Chưa có nội dung đang mở.</div></div></section>
+          <section class="panel" id="tasks"><div class="section-head"><div><p class="kicker">CÔNG VIỆC</p><h2>Nhiệm vụ của tôi</h2></div></div><div id="taskList" class="list"><div class="empty">Chưa có nhiệm vụ được giao.</div></div></section>
+          <section class="panel" id="certificates"><div class="section-head"><div><p class="kicker">GHI NHẬN</p><h2>Giấy chứng nhận của tôi</h2></div></div><div id="certificateList" class="list"><div class="empty">Chưa có Giấy chứng nhận.</div></div></section>
+        </div>
+        <aside>
+          <section class="panel"><p class="kicker">TRUY CẬP NHANH</p><h2>Đăng ký tham gia</h2><div class="quick"><button data-type="class">Các lớp học<span>→</span></button><button data-type="activity">Hoạt động<span>→</span></button><button data-type="event">Sự kiện<span>→</span></button><button data-type="training">Đào tạo / Training<span>→</span></button></div></section>
+          <section class="panel contact"><p class="kicker">THÔNG TIN LIÊN HỆ</p><h2>Sky First Network</h2><p>www.skyfirst.io.vn</p><p>skyfirst.ec@gmail.com</p><p>Hotline/Zalo: 0924 910 210</p></section>
+        </aside>
+      </div>
+    </div>
+    <footer><div><img src="/assets/logo-sfn.png" alt="Sky First"><p>Mạng lưới Giáo dục & Phát triển Cộng đồng Sky First (SFN)</p></div><div><b>Thông tin liên hệ</b><p>Website: www.skyfirst.io.vn<br>Email: skyfirst.ec@gmail.com<br>Hotline/Zalo: 0924 910 210</p></div><div><b>Hệ thống</b><p>Cổng Tình nguyện viên<br>tnv.skyfirst.io.vn</p></div><small>© 2026 Sky First Network (SFN). All rights reserved.</small></footer>
+  </main>
+</div>
+
+<div id="registerModal" class="modal"><div class="modal-card"><button class="modal-close">×</button><p class="kicker">ĐĂNG KÝ THAM GIA</p><h2 id="registerTitle">Đăng ký</h2><p class="muted" id="registerDesc"></p><form id="registerForm" class="form"><label>Nội dung đang mở<select id="registerOpportunity" required></select></label><label>Ghi chú<textarea id="registerNote" maxlength="1000" placeholder="Thông tin cần trao đổi (nếu có)"></textarea></label><button class="btn primary" type="submit">Gửi đăng ký</button></form></div></div>
+
+<div id="adminModal" class="modal"><div class="modal-card wide"><button class="modal-close">×</button><p class="kicker">QUẢN TRỊ HỆ THỐNG</p><h2>Cấp tài khoản & mở nội dung đăng ký</h2><div class="admin-grid"><form id="createUserForm" class="form admin-box"><h3>Cấp tài khoản TNV</h3><label>Họ và tên<input id="newUserName" required></label><label>Email<input id="newUserEmail" type="email" required></label><label>Mật khẩu ban đầu<input id="newUserPassword" type="password" minlength="10" required></label><button class="btn primary" type="submit">Tạo tài khoản</button></form><form id="createOpportunityForm" class="form admin-box"><h3>Tạo nội dung đăng ký</h3><label>Loại<select id="newOppType"><option value="class">Lớp học</option><option value="activity">Hoạt động</option><option value="event">Sự kiện</option><option value="training">Đào tạo / Training</option></select></label><label>Tên<input id="newOppTitle" required></label><label>Đơn vị phụ trách<input id="newOppUnit"></label><label>Mô tả<textarea id="newOppDescription"></textarea></label><button class="btn primary" type="submit">Mở đăng ký</button></form></div></div></div>
+
+<script src="/app.js" defer></script>
+</body></html>

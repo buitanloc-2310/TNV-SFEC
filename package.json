@@ -2,13 +2,18 @@
   "name": "sfn-tnv-portal",
   "private": true,
   "version": "1.0.0",
+  "description": "Cổng Tình nguyện viên - Mạng lưới Giáo dục & Phát triển Cộng đồng Sky First (SFN)",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "db:init:local": "wrangler d1 execute sfn-tnv --local --file=./schema.sql",
-    "db:init:remote": "wrangler d1 execute sfn-tnv --remote --file=./schema.sql"
+    "check": "node --check src/index.js && node --check public/app.js",
+    "db:schema:local": "wrangler d1 execute tnv-sfec --local --file=./schema.sql",
+    "db:inspect:remote": "wrangler d1 execute tnv-sfec --remote --command=\"SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name;\""
   },
   "devDependencies": {
     "wrangler": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

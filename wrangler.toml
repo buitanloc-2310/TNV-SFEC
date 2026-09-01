@@ -1,0 +1,12 @@
+name = "sfn-tnv-portal"
+main = "src/index.js"
+compatibility_date = "2026-08-31"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "tnv-sfec"
+database_id = "d939abd6-c877-4234-be69-60b5a69d52a8"

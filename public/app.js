@@ -26,8 +26,304 @@ async function getUnits(){return (await api('/api/admin/units')).items||[]}
 function unitOptions(un,selected){return un.map(u=>`<option value="${u.id}" ${Number(selected)===Number(u.id)?'selected':''}>${esc(u.name)}</option>`).join('')}
 async function adminOpportunities(){const [d,un]=await Promise.all([api('/api/admin/opportunities'),getUnits()]);const c=$('#accountContent');c.innerHTML=`<p class="eyebrow">QUẢN TRỊ HOẠT ĐỘNG</p><h2>Hoạt động & Cơ hội TNV</h2><p class="muted">Xem, chỉnh sửa, mở/đóng đăng ký, lưu trữ hoặc tạo mới các lớp học, tập huấn, hoạt động và sự kiện.</p><div class="admin-toolbar"><div class="filters-admin"><input id="oppSearch" placeholder="Tìm hoạt động..."><select id="oppStatus"><option value="">Tất cả trạng thái</option><option value="open">Đang mở</option><option value="closed">Đã đóng</option><option value="draft">Bản nháp</option><option value="cancelled">Đã hủy</option></select></div><button class="btn primary" id="newOpp">Tạo hoạt động mới</button></div><div class="panel"><div id="oppAdminTable"></div></div>`;const render=()=>{const q=$('#oppSearch').value.toLowerCase(),st=$('#oppStatus').value;const a=d.items.filter(x=>(!q||(x.title+' '+(x.unit_name||'')).toLowerCase().includes(q))&&(!st||x.status===st));$('#oppAdminTable').innerHTML=`<div class="table-wrap"><table class="table"><thead><tr><th>Hoạt động</th><th>Đơn vị</th><th>Thời gian</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>${a.map(x=>`<tr><td><b>${esc(x.title)}</b><div class="sub">${esc(typeNames[x.type]||x.type)}</div></td><td>${esc(x.unit_name||'—')}</td><td>Hạn: ${fmt(x.registration_deadline)}<br><span class="sub">Bắt đầu: ${fmt(x.start_at)}</span></td><td><span class="status-pill">${status(x.status)}</span></td><td><div class="action-row"><button data-oe="${x.id}">Sửa</button><button data-os="${x.id}" data-v="${x.status==='open'?'closed':'open'}">${x.status==='open'?'Đóng':'Mở'}</button><button class="danger" data-od="${x.id}">Xóa</button></div></td></tr>`).join('')}</tbody></table></div>`;$$('[data-oe]').forEach(b=>b.onclick=()=>oppEditor(d.items.find(x=>x.id==b.dataset.oe),un));$$('[data-os]').forEach(b=>b.onclick=async()=>{await api('/api/admin/opportunities/'+b.dataset.os,{method:'PATCH',body:JSON.stringify({status:b.dataset.v})});await adminOpportunities();refreshPublic()});$$('[data-od]').forEach(b=>b.onclick=async()=>{if(confirm('Xóa hoạt động này? Nếu đã có hồ sơ hoặc phân công, hệ thống sẽ yêu cầu đóng/lưu trữ thay vì xóa.')){try{await api('/api/admin/opportunities/'+b.dataset.od,{method:'DELETE'});await adminOpportunities();refreshPublic()}catch(e){toast(e.message)}}})};render();$('#oppSearch').oninput=render;$('#oppStatus').onchange=render;$('#newOpp').onclick=()=>oppEditor(null,un)}
 function oppEditor(x,un){const wrap=document.createElement('div');wrap.className='modal show';wrap.innerHTML=`<div class="modal-card admin-editor"><button class="modal-x">×</button><p class="eyebrow">${x?'CHỈNH SỬA':'TẠO MỚI'}</p><h2>${x?'Chỉnh sửa hoạt động':'Tạo hoạt động / cơ hội TNV'}</h2><form class="form two-col"><label>Loại<select name="type"><option value="class">Các lớp học</option><option value="training">Đào tạo / Tập huấn</option><option value="activity">Hoạt động</option><option value="event">Sự kiện</option></select></label><label>Đơn vị<select name="unitId">${unitOptions(un,x?.unit_id)}</select></label><label class="wide">Tên hoạt động<input name="title" required value="${esc(x?.title||'')}"></label><label>Bắt đầu<input name="startAt" type="datetime-local" value="${dtLocal(x?.start_at)}"></label><label>Hạn đăng ký<input name="registrationDeadline" type="datetime-local" value="${dtLocal(x?.registration_deadline)}"></label><label>Kết thúc<input name="endAt" type="datetime-local" value="${dtLocal(x?.end_at)}"></label><label>Trạng thái<select name="status"><option value="open">Đang mở</option><option value="draft">Bản nháp</option><option value="closed">Đã đóng</option><option value="cancelled">Đã hủy</option></select></label><label class="wide">Mô tả<textarea name="description" rows="10">${esc(x?.description||'')}</textarea></label><button class="btn primary wide">${x?'Lưu thay đổi':'Tạo hoạt động'}</button></form></div>`;document.body.appendChild(wrap);wrap.querySelector('[name=type]').value=x?.type||'class';wrap.querySelector('[name=status]').value=x?.status||'open';wrap.querySelector('.modal-x').onclick=()=>wrap.remove();wrap.querySelector('form').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target),body=Object.fromEntries(f.entries());body.unitId=Number(body.unitId);try{await api(x?'/api/admin/opportunities/'+x.id:'/api/admin/opportunities',{method:x?'PATCH':'POST',body:JSON.stringify(body)});wrap.remove();toast(x?'Đã cập nhật hoạt động.':'Đã tạo hoạt động.');await adminOpportunities();refreshPublic()}catch(er){toast(er.message)}}}
-function appTable(items,compact=false){return `<div class="table-wrap"><table class="table"><thead><tr><th>Mã / Người đăng ký</th><th>Cơ hội</th><th>Liên hệ</th><th>Trường/Lớp/Đơn vị</th><th>Trạng thái</th></tr></thead><tbody>${items.map(a=>`<tr><td><b>${esc(a.application_code)}</b><br>${esc(a.full_name)}<div class="sub">${fmt(a.created_at)}</div></td><td>${esc(a.opportunity_title)}</td><td>${esc(a.email)}<br>${esc(a.phone)}</td><td>${esc(a.school_class_unit)}</td><td><span class="status-pill">${status(a.status)}</span>${compact?'':`<div class="action-row" style="margin-top:7px"><button data-app-status="reviewing" data-app-id="${a.id}">Xem xét</button><button data-app-status="approved" data-app-id="${a.id}">Đạt</button><button data-app-status="rejected" data-app-id="${a.id}">Không đạt</button><button data-app-status="account_issued" data-app-id="${a.id}">Đã cấp TK</button></div>`}</td></tr>`).join('')}</tbody></table></div>`}
-async function adminApplications(){const d=await api('/api/admin/applications');$('#accountContent').innerHTML=`<p class="eyebrow">TIẾP NHẬN & XÉT DUYỆT</p><h2>Hồ sơ đăng ký</h2><p class="muted">Theo dõi hồ sơ theo từng cơ hội và cập nhật trạng thái xử lý.</p><div class="admin-toolbar"><input id="appSearch" placeholder="Tìm mã, tên, email..."><select id="appFilter"><option value="">Tất cả trạng thái</option>${['received','reviewing','approved','rejected','account_issued'].map(x=>`<option value="${x}">${status(x)}</option>`).join('')}</select></div><div class="panel" id="appBox"></div>`;const render=()=>{const q=$('#appSearch').value.toLowerCase(),st=$('#appFilter').value;const a=d.items.filter(x=>(!q||(x.application_code+' '+x.full_name+' '+x.email+' '+x.opportunity_title).toLowerCase().includes(q))&&(!st||x.status===st));$('#appBox').innerHTML=appTable(a);$$('[data-app-status]').forEach(b=>b.onclick=async()=>{await api('/api/admin/applications/'+b.dataset.appId,{method:'PATCH',body:JSON.stringify({status:b.dataset.appStatus})});await adminApplications()})};render();$('#appSearch').oninput=render;$('#appFilter').onchange=render}
+function appTable(items,compact=false){
+  return `<div class="table-wrap">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Mã / Người đăng ký</th>
+          <th>Cơ hội</th>
+          <th>Liên hệ</th>
+          <th>Trường/Lớp/Đơn vị</th>
+          <th>Trạng thái</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${items.map(a=>`
+          <tr>
+            <td>
+              <b>${esc(a.application_code)}</b><br>
+              ${esc(a.full_name)}
+              <div class="sub">${fmt(a.created_at)}</div>
+            </td>
+            <td>${esc(a.opportunity_title)}</td>
+            <td>
+              ${esc(a.email)}<br>
+              ${esc(a.phone)}
+            </td>
+            <td>${esc(a.school_class_unit)}</td>
+            <td>
+              <span class="status-pill">${status(a.status)}</span>
+              ${
+                compact
+                  ? ''
+                  : `<div class="action-row" style="margin-top:7px">
+                      <button
+                        data-app-status="reviewing"
+                        data-app-id="${a.id}">
+                        Xem xét
+                      </button>
+
+                      <button
+                        data-app-status="approved"
+                        data-app-id="${a.id}">
+                        Đạt
+                      </button>
+
+                      <button
+                        data-app-status="rejected"
+                        data-app-id="${a.id}">
+                        Không đạt
+                      </button>
+
+                      ${
+                        a.status==='approved'
+                          ? `<button
+                              class="btn primary"
+                              data-issue-account="${a.id}">
+                              Cấp tài khoản TNV
+                            </button>`
+                          : ''
+                      }
+                    </div>`
+              }
+            </td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  </div>`
+}
+
+async function adminApplications(){
+  const d=await api('/api/admin/applications');
+
+  $('#accountContent').innerHTML=`
+    <p class="eyebrow">TIẾP NHẬN & XÉT DUYỆT</p>
+
+    <h2>Hồ sơ đăng ký</h2>
+
+    <p class="muted">
+      Theo dõi hồ sơ theo từng cơ hội, xét duyệt và cấp tài khoản TNV
+      trực tiếp cho hồ sơ đạt.
+    </p>
+
+    <div class="admin-toolbar">
+      <input
+        id="appSearch"
+        placeholder="Tìm mã, tên, email..."
+      >
+
+      <select id="appFilter">
+        <option value="">Tất cả trạng thái</option>
+
+        ${
+          [
+            'received',
+            'reviewing',
+            'approved',
+            'rejected',
+            'account_issued'
+          ].map(x=>`
+            <option value="${x}">
+              ${status(x)}
+            </option>
+          `).join('')
+        }
+      </select>
+    </div>
+
+    <div class="panel" id="appBox"></div>
+  `;
+
+  const render=()=>{
+    const q=$('#appSearch').value.toLowerCase();
+    const st=$('#appFilter').value;
+
+    const a=d.items.filter(x=>
+      (
+        !q ||
+        (
+          x.application_code+' '+
+          x.full_name+' '+
+          x.email+' '+
+          x.opportunity_title
+        ).toLowerCase().includes(q)
+      )
+      &&
+      (!st || x.status===st)
+    );
+
+    $('#appBox').innerHTML=appTable(a);
+
+    $$('[data-app-status]').forEach(b=>{
+      b.onclick=async()=>{
+        try{
+          await api(
+            '/api/admin/applications/'+b.dataset.appId,
+            {
+              method:'PATCH',
+              body:JSON.stringify({
+                status:b.dataset.appStatus
+              })
+            }
+          );
+
+          await adminApplications();
+        }catch(e){
+          toast(e.message);
+        }
+      };
+    });
+
+    $$('[data-issue-account]').forEach(b=>{
+      b.onclick=()=>{
+        const app=d.items.find(
+          x=>Number(x.id)===Number(b.dataset.issueAccount)
+        );
+
+        if(app){
+          issueVolunteerFromApplication(app);
+        }
+      };
+    });
+  };
+
+  render();
+
+  $('#appSearch').oninput=render;
+  $('#appFilter').onchange=render;
+}
+
+async function issueVolunteerFromApplication(app){
+  const un=await getUnits();
+
+  const w=document.createElement('div');
+  w.className='modal show';
+
+  const inferredUnitId=Number(
+    app.unit_id ||
+    app.opportunity_unit_id ||
+    0
+  );
+
+  w.innerHTML=`
+    <div class="modal-card small">
+
+      <button class="modal-x">×</button>
+
+      <p class="eyebrow">
+        CẤP TÀI KHOẢN TỪ HỒ SƠ
+      </p>
+
+      <h2>Tình nguyện viên</h2>
+
+      <p class="muted">
+        Hồ sơ ${esc(app.application_code||'')} đã đạt.
+        Kiểm tra thông tin và đặt mật khẩu tạm để cấp tài khoản.
+      </p>
+
+      <form class="form">
+
+        <label>
+          Họ tên
+          <input
+            name="fullName"
+            required
+            value="${esc(app.full_name||'')}"
+          >
+        </label>
+
+        <label>
+          Email
+          <input
+            name="email"
+            type="email"
+            required
+            value="${esc(app.email||'')}"
+          >
+        </label>
+
+        <label>
+          Đơn vị
+          <select name="unitId">
+            ${unitOptions(un,inferredUnitId)}
+          </select>
+        </label>
+
+        <label>
+          Mật khẩu tạm
+          <input
+            name="password"
+            type="password"
+            minlength="10"
+            required
+          >
+        </label>
+
+        <button class="btn primary">
+          Cấp tài khoản TNV
+        </button>
+
+      </form>
+    </div>
+  `;
+
+  document.body.appendChild(w);
+
+  w.querySelector('.modal-x').onclick=()=>{
+    w.remove();
+  };
+
+  w.querySelector('form').onsubmit=async e=>{
+    e.preventDefault();
+
+    const btn=e.submitter;
+    btn.disabled=true;
+
+    const b=Object.fromEntries(
+      new FormData(e.target).entries()
+    );
+
+    b.unitId=Number(b.unitId);
+    b.accountType='volunteer';
+
+    try{
+
+      await api(
+        '/api/admin/users',
+        {
+          method:'POST',
+          body:JSON.stringify(b)
+        }
+      );
+
+      await api(
+        '/api/admin/applications/'+app.id,
+        {
+          method:'PATCH',
+          body:JSON.stringify({
+            status:'account_issued'
+          })
+        }
+      );
+
+      w.remove();
+
+      toast(
+        'Đã cấp tài khoản TNV và cập nhật hồ sơ.'
+      );
+
+      await adminApplications();
+
+    }catch(er){
+
+      toast(er.message);
+      btn.disabled=false;
+
+    }
+  };
+}
 async function adminVolunteers(){const [us,un]=await Promise.all([api('/api/admin/users?kind=volunteer'),getUnits()]);$('#accountContent').innerHTML=`<p class="eyebrow">NHÂN SỰ TÌNH NGUYỆN</p><h2>Tình nguyện viên</h2><p class="muted">Quản lý tài khoản TNV trong phạm vi được phân quyền.</p><div class="admin-toolbar"><input id="volSearch" placeholder="Tìm tên hoặc email..."><button class="btn primary" id="newVol">Cấp tài khoản TNV</button></div><div class="panel" id="volBox"></div>`;const render=()=>{const q=$('#volSearch').value.toLowerCase(),a=us.items.filter(x=>(x.full_name+' '+x.email+' '+(x.unit_name||'')).toLowerCase().includes(q));$('#volBox').innerHTML=`<div class="table-wrap"><table class="table"><thead><tr><th>TNV</th><th>Đơn vị</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>${a.map(u=>`<tr><td><b>${esc(u.full_name)}</b><br>${esc(u.email)}</td><td>${esc(u.unit_name||'—')}</td><td>${status(u.status)}</td><td><div class="action-row"><button data-user-status="${u.id}" data-v="${u.status==='active'?'locked':'active'}">${u.status==='active'?'Khóa':'Kích hoạt'}</button></div></td></tr>`).join('')}</tbody></table></div>`;$$('[data-user-status]').forEach(b=>b.onclick=async()=>{await api('/api/admin/users/'+b.dataset.userStatus,{method:'PATCH',body:JSON.stringify({status:b.dataset.v})});await adminVolunteers()})};render();$('#volSearch').oninput=render;$('#newVol').onclick=()=>userEditor('volunteer',un)}
 function userEditor(kind,un){const w=document.createElement('div');w.className='modal show';w.innerHTML=`<div class="modal-card small"><button class="modal-x">×</button><p class="eyebrow">CẤP TÀI KHOẢN</p><h2>${kind==='unit_admin'?'Quản trị đơn vị':'Tình nguyện viên'}</h2><form class="form"><label>Họ tên<input name="fullName" required></label><label>Email<input name="email" type="email" required></label><label>Đơn vị<select name="unitId">${unitOptions(un)}</select></label><label>Mật khẩu tạm<input name="password" type="password" minlength="10" required></label><button class="btn primary">Cấp tài khoản</button></form></div>`;document.body.appendChild(w);w.querySelector('.modal-x').onclick=()=>w.remove();w.querySelector('form').onsubmit=async e=>{e.preventDefault();const b=Object.fromEntries(new FormData(e.target).entries());b.unitId=Number(b.unitId);b.accountType=kind;try{await api('/api/admin/users',{method:'POST',body:JSON.stringify(b)});w.remove();toast('Đã cấp tài khoản.');kind==='unit_admin'?adminAdmins():adminVolunteers()}catch(er){toast(er.message)}}}
 async function adminAdmins(){const [us,un]=await Promise.all([api('/api/admin/users?kind=admin'),getUnits()]);$('#accountContent').innerHTML=`<p class="eyebrow">PHÂN QUYỀN</p><h2>Tài khoản quản trị</h2><p class="muted">Quản trị hệ thống có thể cấp tài khoản quản trị đơn vị. Mỗi tài khoản đơn vị chỉ thao tác trong phạm vi được gán.</p><div class="admin-toolbar"><span></span><button class="btn primary" id="newAdmin">Cấp quản trị đơn vị</button></div><div class="panel"><div class="table-wrap"><table class="table"><thead><tr><th>Họ tên</th><th>Email</th><th>Phạm vi</th><th>Trạng thái</th></tr></thead><tbody>${us.items.map(u=>`<tr><td>${esc(u.full_name)}</td><td>${esc(u.email)}</td><td>${u.admin_scope==='system'?'Toàn hệ thống':esc(u.unit_name||'Đơn vị')}</td><td>${status(u.status)}</td></tr>`).join('')}</tbody></table></div></div>`;$('#newAdmin').onclick=()=>userEditor('unit_admin',un)}

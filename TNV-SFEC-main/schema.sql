@@ -82,6 +82,8 @@ CREATE TABLE IF NOT EXISTS volunteer_applications (
   experience TEXT,
   motivation TEXT,
   note TEXT,
+  profile_photo_key TEXT,
+  profile_photo_token TEXT,
   status TEXT NOT NULL DEFAULT 'received' CHECK (status IN ('received','reviewing','approved','rejected','account_issued')),
   reviewed_by INTEGER,
   reviewed_at TEXT,

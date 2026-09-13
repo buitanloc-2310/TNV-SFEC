@@ -1,4 +1,7 @@
 const ADMIN_EMAIL = 'skyfirst.ec@gmail.com';
+const APPLICATION_RECEIVER_EMAIL = 'nhansu.sfn@gmail.com';
+const DEFAULT_MAIL_FROM = 'Sky First · Tình nguyện viên <tnv@skyfirst.io.vn>';
+const MAX_PROFILE_PHOTO_BYTES = 5 * 1024 * 1024;
 const SESSION_DAYS = 7;
 const PBKDF2_ITERATIONS = 100000; // Giữ nguyên để tương thích Cloudflare và dữ liệu hiện hữu.
 const SFEC_CODE = 'SFEC';
@@ -51,19 +54,45 @@ async function api(request, env, url) {
   }
 
   if (url.pathname === '/api/public/applications' && method === 'POST') {
-    const b = await readJson(request);
+    const contentType=request.headers.get('Content-Type')||'';
+    let b={}, profilePhoto=null;
+    if(contentType.includes('multipart/form-data')){
+      const fd=await request.formData();
+      b=Object.fromEntries([...fd.entries()].filter(([k,v])=>!(v instanceof File)));
+      const f=fd.get('profilePhoto');
+      if(f instanceof File && f.size) profilePhoto=f;
+    }else{
+      b=await readJson(request);
+    }
     const opportunityId = Number(b.opportunityId);
     const fullName = clean(b.fullName,120), email=normalizeEmail(b.email), phone=clean(b.phone,40), school=clean(b.schoolClassUnit,180);
     if (!Number.isInteger(opportunityId)||opportunityId<1) return json({ok:false,error:'Cơ hội đăng ký không hợp lệ.'},400);
     if (!fullName || !isValidEmail(email) || !phone || !school) return json({ok:false,error:'Họ tên, email, số điện thoại và trường/lớp/đơn vị là thông tin bắt buộc.'},400);
-    const opp = await env.DB.prepare(`SELECT o.id,o.title,o.unit_id,o.registration_deadline,u.name unit_name,u.notification_email FROM opportunities o LEFT JOIN units u ON u.id=o.unit_id WHERE o.id=? AND o.status='open' LIMIT 1`).bind(opportunityId).first();
+    if(!profilePhoto) return json({ok:false,error:'Vui lòng tải lên ảnh cá nhân để hoàn tất đăng ký.'},400);
+    const photoError=validateProfilePhoto(profilePhoto); if(photoError) return json({ok:false,error:photoError},400);
+    const opp = await env.DB.prepare(`SELECT o.id,o.type,o.title,o.unit_id,o.start_at,o.end_at,o.registration_deadline,u.name unit_name,u.notification_email FROM opportunities o LEFT JOIN units u ON u.id=o.unit_id WHERE o.id=? AND o.status='open' LIMIT 1`).bind(opportunityId).first();
     if (!opp) return json({ok:false,error:'Cơ hội này hiện không mở đăng ký.'},404);
     if (opp.registration_deadline && Date.parse(opp.registration_deadline) < Date.now()) return json({ok:false,error:'Đã hết thời hạn đăng ký.'},409);
+    if(!env.FILES) return json({ok:false,error:'Kho lưu trữ ảnh TNV chưa được cấu hình (R2 binding FILES).'},503);
     const code = await newApplicationCode(env);
-    await env.DB.prepare(`INSERT INTO volunteer_applications(application_code,opportunity_id,unit_id,full_name,date_of_birth,email,phone,school_class_unit,experience,motivation,note,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,'received')`)
-      .bind(code,opp.id,opp.unit_id||null,fullName,nullableText(b.dateOfBirth),email,phone,school,clean(b.experience,2000)||null,clean(b.motivation,2000)||null,clean(b.note,1000)||null).run();
-    await sendApplicationEmails(env,{code,opportunity:opp,fullName,email,phone,school});
+    const photoToken=randomToken(24), photoExt=imageExtension(profilePhoto.type), photoKey=`applications/${code}/profile-${crypto.randomUUID()}.${photoExt}`;
+    await env.FILES.put(photoKey,profilePhoto.stream(),{httpMetadata:{contentType:profilePhoto.type},customMetadata:{applicationCode:code,kind:'profile-photo'}});
+    try{
+      await env.DB.prepare(`INSERT INTO volunteer_applications(application_code,opportunity_id,unit_id,full_name,date_of_birth,email,phone,school_class_unit,experience,motivation,note,profile_photo_key,profile_photo_token,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'received')`)
+        .bind(code,opp.id,opp.unit_id||null,fullName,nullableText(b.dateOfBirth),email,phone,school,clean(b.experience,2000)||null,clean(b.motivation,2000)||null,clean(b.note,1000)||null,photoKey,photoToken).run();
+    }catch(e){await env.FILES.delete(photoKey).catch(()=>{});throw e;}
+    await sendApplicationEmails(env,{code,opportunity:opp,fullName,email,phone,school,profilePhotoKey:photoKey,profilePhotoToken:photoToken});
     return json({ok:true,applicationCode:code,message:`Hồ sơ đã được tiếp nhận. Mã hồ sơ: ${code}`},201);
+  }
+
+  const photoMatch=url.pathname.match(/^\/api\/public\/application-photo\/([^/]+)$/);
+  if(photoMatch && method==='GET'){
+    const code=decodeURIComponent(photoMatch[1]), token=clean(url.searchParams.get('token'),160);
+    const a=await env.DB.prepare('SELECT profile_photo_key,profile_photo_token FROM volunteer_applications WHERE application_code=? LIMIT 1').bind(code).first();
+    if(!a?.profile_photo_key || !token || token!==a.profile_photo_token) return new Response('Not found',{status:404});
+    const obj=await env.FILES.get(a.profile_photo_key); if(!obj) return new Response('Not found',{status:404});
+    const h=new Headers(); obj.writeHttpMetadata(h); h.set('Cache-Control','private, max-age=86400'); h.set('X-Content-Type-Options','nosniff');
+    return new Response(obj.body,{headers:h});
   }
 
   // Tra cứu GCN công khai. Nếu Cổng CTT trung tâm được cấu hình, chuyển truy vấn tới CTT; không gắn GCN vào tài khoản TNV.
@@ -163,7 +192,9 @@ async function ensureSchema(env){
     `ALTER TABLE users ADD COLUMN unit_id INTEGER`,
     `ALTER TABLE users ADD COLUMN admin_scope TEXT NOT NULL DEFAULT 'none'`,
     `ALTER TABLE units ADD COLUMN notification_email TEXT`,
-    `ALTER TABLE volunteer_profiles ADD COLUMN school_class_unit TEXT`
+    `ALTER TABLE volunteer_profiles ADD COLUMN school_class_unit TEXT`,
+    `ALTER TABLE volunteer_applications ADD COLUMN profile_photo_key TEXT`,
+    `ALTER TABLE volunteer_applications ADD COLUMN profile_photo_token TEXT`
   ];
   for(const sql of alters){try{await env.DB.prepare(sql).run();}catch(e){if(!String(e).toLowerCase().includes('duplicate column')) console.log('schema compatibility:',String(e));}}
   // Nâng tài khoản admin cũ thành quản trị hệ thống, không đổi ID/tài khoản.
@@ -172,16 +203,240 @@ async function ensureSchema(env){
 
 async function sendApplicationEmails(env,x){
   if(!env.RESEND_API_KEY) return;
-  const to=x.opportunity.notification_email||ADMIN_EMAIL;
+  const configured=normalizeEmail(x.opportunity.notification_email||'');
+  const to=(!configured || configured==='skyfirst.ec@gmail.com') ? APPLICATION_RECEIVER_EMAIL : configured;
   const headers={'Authorization':`Bearer ${env.RESEND_API_KEY}`,'Content-Type':'application/json'};
-  const from=env.MAIL_FROM||'Sky First <noreply@skyfirst.io.vn>';
-  const adminText=`Có hồ sơ TNV mới\nMã hồ sơ: ${x.code}\nCơ hội: ${x.opportunity.title}\nHọ tên: ${x.fullName}\nEmail: ${x.email}\nSố điện thoại: ${x.phone}\nTrường/Lớp/Đơn vị: ${x.school}`;
-  const applicantText=`Sky First đã tiếp nhận hồ sơ tình nguyện viên của bạn.\nMã hồ sơ: ${x.code}\nCơ hội: ${x.opportunity.title}\nVui lòng lưu mã hồ sơ để đối chiếu khi cần.`;
+  const from=env.MAIL_FROM||DEFAULT_MAIL_FROM;
+  const appUrl=(env.APP_URL||'https://tnv.skyfirst.io.vn').replace(/\/$/,'');
+  const photoUrl=`${appUrl}/api/public/application-photo/${encodeURIComponent(x.code)}?token=${encodeURIComponent(x.profilePhotoToken)}`;
+  const profileImageBlock=`<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\" style=\"margin-top:20px;\"><tr><td align=\"center\"><img src=\"${escapeHtml(photoUrl)}\" alt=\"Ảnh cá nhân\" width=\"150\" style=\"display:block;width:150px;height:150px;object-fit:cover;border-radius:20px;border:5px solid #fff;box-shadow:0 8px 26px rgba(83,32,100,.18);\"></td></tr></table>`;
+  const applicantHtml=renderTemplate(TNV_CONFIRMATION_EMAIL_TEMPLATE,{
+    FULL_NAME:escapeHtml(x.fullName), VOLUNTEER_ID:escapeHtml(x.code), PROGRAM_NAME:escapeHtml(x.opportunity.title),
+    ACTIVITY_TYPE:escapeHtml(opportunityTypeName(x.opportunity.type)), ROLE_NAME:'Tình nguyện viên', TEAM_NAME:escapeHtml(x.opportunity.unit_name||'Sky First Network'),
+    START_TIME:escapeHtml(formatViDateTime(x.opportunity.start_at)||'Theo thông báo của Ban Tổ chức'), END_TIME:escapeHtml(formatViDateTime(x.opportunity.end_at)||''),
+    LOCATION:'Theo thông tin chương trình', MODE:escapeHtml(x.opportunity.type==='class'?'Theo hình thức lớp học':'Theo kế hoạch hoạt động'),
+    EMAIL:escapeHtml(x.email), PHONE:escapeHtml(x.phone), SUBMITTED_AT:escapeHtml(formatViDateTime(new Date().toISOString())), STATUS:'ĐÃ TIẾP NHẬN',
+    VOLUNTEER_NOTE:'Ban phụ trách sẽ xem xét hồ sơ và liên hệ qua email hoặc số điện thoại/Zalo bạn đã đăng ký khi có cập nhật.',
+    ACTION_URL:'https://tnv.skyfirst.io.vn/#application-lookup', ACTION_LABEL:'TRA CỨU HỒ SƠ TNV', PROFILE_IMAGE_BLOCK:profileImageBlock
+  });
+  const adminText=`Có hồ sơ TNV mới\nMã hồ sơ: ${x.code}\nCơ hội: ${x.opportunity.title}\nHọ tên: ${x.fullName}\nEmail: ${x.email}\nSố điện thoại: ${x.phone}\nTrường/Lớp/Đơn vị: ${x.school}\nẢnh cá nhân: ${photoUrl}`;
+  const applicantText=`Sky First Network đã tiếp nhận đăng ký tình nguyện viên của bạn.\nMã hồ sơ: ${x.code}\nChương trình: ${x.opportunity.title}\nTra cứu tại: ${appUrl}`;
   await Promise.allSettled([
     fetch('https://api.resend.com/emails',{method:'POST',headers,body:JSON.stringify({from,to:[to],subject:`[TNV] Hồ sơ mới ${x.code}`,text:adminText})}),
-    fetch('https://api.resend.com/emails',{method:'POST',headers,body:JSON.stringify({from,to:[x.email],subject:`Sky First đã tiếp nhận hồ sơ ${x.code}`,text:applicantText})})
+    fetch('https://api.resend.com/emails',{method:'POST',headers,body:JSON.stringify({from,to:[x.email],subject:`Sky First | Xác nhận đăng ký ${x.code}`,html:applicantHtml,text:applicantText})})
   ]);
 }
+const TNV_CONFIRMATION_EMAIL_TEMPLATE = String.raw`<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sky First Network — Xác nhận Tình nguyện viên</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f7fb;font-family:Arial,Helvetica,sans-serif;color:#203244;">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f4f7fb;padding:32px 12px;">
+<tr>
+<td align="center">
+
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:720px;background:#ffffff;border-radius:26px;overflow:hidden;box-shadow:0 18px 50px rgba(31,54,82,.14);">
+
+<!-- HERO -->
+<tr>
+<td style="padding:40px 42px;background:linear-gradient(120deg,#5b21b6 0%,#9333ea 34%,#db2777 67%,#f97316 100%);color:#ffffff;">
+<div style="font-size:12px;font-weight:800;letter-spacing:1.8px;text-transform:uppercase;opacity:.92;">SKY FIRST NETWORK</div>
+<h1 style="margin:10px 0 8px;font-size:30px;line-height:1.25;">Xác nhận đăng ký Tình nguyện viên</h1>
+<p style="margin:0;font-size:15px;line-height:1.7;opacity:.95;">Thông tin đăng ký của bạn đã được hệ thống tiếp nhận.</p>
+</td>
+</tr>
+
+<tr>
+<td style="height:7px;background:linear-gradient(90deg,#6d28d9,#c026d3,#ef4444,#f97316);font-size:0;">&nbsp;</td>
+</tr>
+
+<!-- CONTENT -->
+<tr>
+<td style="padding:36px 42px 14px;">
+
+<p style="margin:0 0 18px;font-size:16px;line-height:1.75;">
+Xin chào <strong style="color:#7e22ce;">{{FULL_NAME}}</strong>,
+</p>
+
+<p style="margin:0 0 24px;font-size:16px;line-height:1.75;">
+Sky First Network xác nhận đã tiếp nhận đăng ký của bạn cho
+<strong>{{PROGRAM_NAME}}</strong>.
+Thông tin dưới đây được tự động điền theo nội dung bạn đã đăng ký.
+</p>
+
+<!-- CODE -->
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:linear-gradient(120deg,#f5ecff,#fff0f5,#fff6e9);border:1px solid #eadcf4;border-radius:20px;">
+<tr>
+<td align="center" style="padding:24px 18px;">
+<div style="font-size:12px;color:#765d7c;font-weight:800;letter-spacing:1.3px;text-transform:uppercase;">MÃ ĐĂNG KÝ TNV</div>
+<div style="margin-top:9px;font-size:26px;font-weight:800;color:#7b278e;letter-spacing:.7px;">{{VOLUNTEER_ID}}</div>
+</td>
+</tr>
+</table>
+
+{{PROFILE_IMAGE_BLOCK}}
+
+<!-- 4 CARDS -->
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-top:20px;">
+<tr>
+<td width="49%" valign="top" style="padding:18px;border:1px solid #e4e8ef;border-radius:17px;background:#ffffff;">
+<div style="font-size:12px;color:#7b8794;font-weight:800;letter-spacing:.8px;text-transform:uppercase;">CHƯƠNG TRÌNH</div>
+<div style="margin-top:8px;font-size:16px;font-weight:800;color:#552064;line-height:1.45;">{{PROGRAM_NAME}}</div>
+<div style="margin-top:6px;font-size:13px;color:#75879a;line-height:1.55;">{{ACTIVITY_TYPE}}</div>
+</td>
+<td width="2%">&nbsp;</td>
+<td width="49%" valign="top" style="padding:18px;border:1px solid #e4e8ef;border-radius:17px;background:#ffffff;">
+<div style="font-size:12px;color:#7b8794;font-weight:800;letter-spacing:.8px;text-transform:uppercase;">VAI TRÒ</div>
+<div style="margin-top:8px;font-size:16px;font-weight:800;color:#552064;line-height:1.45;">{{ROLE_NAME}}</div>
+<div style="margin-top:6px;font-size:13px;color:#75879a;line-height:1.55;">{{TEAM_NAME}}</div>
+</td>
+</tr>
+
+<tr><td colspan="3" style="height:12px;"></td></tr>
+
+<tr>
+<td width="49%" valign="top" style="padding:18px;border:1px solid #e4e8ef;border-radius:17px;background:#ffffff;">
+<div style="font-size:12px;color:#7b8794;font-weight:800;letter-spacing:.8px;text-transform:uppercase;">THỜI GIAN</div>
+<div style="margin-top:8px;font-size:16px;font-weight:800;color:#552064;line-height:1.45;">{{START_TIME}}</div>
+<div style="margin-top:6px;font-size:13px;color:#75879a;line-height:1.55;">{{END_TIME}}</div>
+</td>
+<td width="2%">&nbsp;</td>
+<td width="49%" valign="top" style="padding:18px;border:1px solid #e4e8ef;border-radius:17px;background:#ffffff;">
+<div style="font-size:12px;color:#7b8794;font-weight:800;letter-spacing:.8px;text-transform:uppercase;">ĐỊA ĐIỂM / HÌNH THỨC</div>
+<div style="margin-top:8px;font-size:16px;font-weight:800;color:#552064;line-height:1.45;">{{LOCATION}}</div>
+<div style="margin-top:6px;font-size:13px;color:#75879a;line-height:1.55;">{{MODE}}</div>
+</td>
+</tr>
+</table>
+
+<!-- DETAILS -->
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-top:20px;border:1px solid #e1e8ef;border-radius:18px;background:#fff;">
+<tr>
+<td style="padding:22px 24px;">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+<tr>
+<td style="padding:9px 0;color:#687d90;font-size:14px;">Họ và tên</td>
+<td align="right" style="padding:9px 0;font-size:14px;font-weight:700;">{{FULL_NAME}}</td>
+</tr>
+<tr>
+<td style="padding:9px 0;color:#687d90;font-size:14px;">Email</td>
+<td align="right" style="padding:9px 0;font-size:14px;font-weight:700;">{{EMAIL}}</td>
+</tr>
+<tr>
+<td style="padding:9px 0;color:#687d90;font-size:14px;">Số điện thoại</td>
+<td align="right" style="padding:9px 0;font-size:14px;font-weight:700;">{{PHONE}}</td>
+</tr>
+<tr>
+<td style="padding:9px 0;color:#687d90;font-size:14px;">Ngày đăng ký</td>
+<td align="right" style="padding:9px 0;font-size:14px;font-weight:700;">{{SUBMITTED_AT}}</td>
+</tr>
+<tr>
+<td style="padding:9px 0;color:#687d90;font-size:14px;">Trạng thái</td>
+<td align="right" style="padding:9px 0;">
+<span style="display:inline-block;padding:8px 13px;border-radius:999px;background:#f2e8ff;color:#672b8b;font-size:12px;font-weight:800;">{{STATUS}}</span>
+</td>
+</tr>
+</table>
+</td>
+</tr>
+</table>
+
+<!-- DYNAMIC NOTE -->
+<div style="margin-top:20px;padding:18px 20px;border-radius:16px;background:linear-gradient(100deg,#faf3ff,#fff4f0);border-left:4px solid #a63886;">
+<div style="font-size:13px;font-weight:800;color:#6b2d73;margin-bottom:6px;">THÔNG TIN DÀNH CHO TÌNH NGUYỆN VIÊN</div>
+<div style="font-size:14px;line-height:1.7;color:#65546b;">{{VOLUNTEER_NOTE}}</div>
+</div>
+
+<!-- CTA -->
+<div style="text-align:center;padding:31px 0 15px;">
+<a href="{{ACTION_URL}}" style="display:inline-block;padding:15px 31px;border-radius:13px;background:linear-gradient(100deg,#762b82,#c23872,#f4511e);color:#fff;text-decoration:none;font-size:14px;font-weight:800;letter-spacing:.3px;box-shadow:0 9px 22px rgba(174,52,91,.22);">{{ACTION_LABEL}}</a>
+</div>
+
+<p style="margin:0;text-align:center;color:#738597;font-size:13px;line-height:1.65;">
+Thông tin đăng ký của bạn đã được gửi đến địa chỉ email đăng ký.
+</p>
+
+</td>
+</tr>
+
+<!-- SKY FIRST ECOSYSTEM -->
+<tr>
+<td style="padding:10px 42px 34px;">
+<div style="border-top:1px solid #e7edf3;padding-top:25px;">
+<div style="font-size:12px;font-weight:800;letter-spacing:1.4px;color:#64788b;text-transform:uppercase;margin-bottom:8px;">HỆ SINH THÁI TRỰC TUYẾN SKY FIRST</div>
+<div style="font-size:14px;line-height:1.65;color:#6d8091;margin-bottom:18px;">Các không gian trực tuyến được tách theo từng nhu cầu để bạn dễ truy cập đúng nơi cần thiết.</div>
+
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+<tr>
+<td width="49%" valign="top" style="padding:18px;border:1px solid #dbe7f0;border-radius:17px;background:linear-gradient(145deg,#fff,#faf4ff);">
+<div style="font-size:16px;font-weight:800;color:#552064;margin-bottom:7px;">Cổng Thông tin</div>
+<div style="font-size:13px;line-height:1.55;color:#687d90;margin-bottom:8px;">Tra cứu thông tin, đăng ký và trạng thái xử lý.</div>
+<a href="https://ctt.skyfirst.io.vn" style="font-size:12px;font-weight:800;color:#f4511e;text-decoration:none;">ctt.skyfirst.io.vn</a>
+</td>
+<td width="2%">&nbsp;</td>
+<td width="49%" valign="top" style="padding:18px;border:1px solid #dbe7f0;border-radius:17px;background:linear-gradient(145deg,#fff,#fff5f8);">
+<div style="font-size:16px;font-weight:800;color:#552064;margin-bottom:7px;">Cổng Thành viên</div>
+<div style="font-size:13px;line-height:1.55;color:#687d90;margin-bottom:8px;">Không gian dành cho thành viên và phối hợp nội bộ.</div>
+<a href="https://member.skyfirst.io.vn" style="font-size:12px;font-weight:800;color:#f4511e;text-decoration:none;">member.skyfirst.io.vn</a>
+</td>
+</tr>
+
+<tr><td colspan="3" style="height:12px;"></td></tr>
+
+<tr>
+<td width="49%" valign="top" style="padding:18px;border:1px solid #dbe7f0;border-radius:17px;background:linear-gradient(145deg,#fff,#f4f8ff);">
+<div style="font-size:16px;font-weight:800;color:#552064;margin-bottom:7px;">Cổng Tình nguyện viên</div>
+<div style="font-size:13px;line-height:1.55;color:#687d90;margin-bottom:8px;">Thông tin, lịch hoạt động và nội dung dành cho TNV.</div>
+<a href="https://tnv.skyfirst.io.vn" style="font-size:12px;font-weight:800;color:#f4511e;text-decoration:none;">tnv.skyfirst.io.vn</a>
+</td>
+<td width="2%">&nbsp;</td>
+<td width="49%" valign="top" style="padding:18px;border:1px solid #dbe7f0;border-radius:17px;background:linear-gradient(145deg,#fff,#fff8ef);">
+<div style="font-size:16px;font-weight:800;color:#552064;margin-bottom:7px;">Trang Sky First</div>
+<div style="font-size:13px;line-height:1.55;color:#687d90;margin-bottom:8px;">Thông tin chung, hoạt động và nội dung công khai.</div>
+<a href="https://skyfirst.io.vn" style="font-size:12px;font-weight:800;color:#f4511e;text-decoration:none;">skyfirst.io.vn</a>
+</td>
+</tr>
+</table>
+
+</div>
+</td>
+</tr>
+
+<!-- NOTE -->
+<tr>
+<td style="padding:0 42px 30px;">
+<div style="padding:17px 19px;border-radius:15px;background:#f8f4fb;border-left:4px solid #8b3a91;">
+<p style="margin:0;color:#66536a;font-size:13px;line-height:1.7;"><strong>Lưu ý:</strong> Đây là email tự động. Vui lòng không phản hồi trực tiếp email này.</p>
+</div>
+</td>
+</tr>
+
+<!-- FOOTER -->
+<tr>
+<td style="padding:24px 30px;text-align:center;background:linear-gradient(110deg,#35145d,#55206e,#762b5f);color:#dcd0e5;">
+<div style="font-size:13px;font-weight:700;color:#fff;">Sky First Network</div>
+<div style="margin-top:6px;font-size:12px;line-height:1.65;">Cổng Tình nguyện viên · tnv.skyfirst.io.vn</div>
+<div style="margin-top:11px;font-size:11px;opacity:.75;">© 2026 Sky First Network. All rights reserved.</div>
+</td>
+</tr>
+
+</table>
+
+</td>
+</tr>
+</table>
+</body>
+</html>
+`;
+function renderTemplate(t,vars){return String(t).replace(/\{\{([A-Z0-9_]+)\}\}/g,(_,k)=>vars[k]??'');}
+function escapeHtml(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function validateProfilePhoto(f){if(!f || !(f instanceof File))return 'Vui lòng tải lên ảnh cá nhân để hoàn tất đăng ký.';if(!['image/jpeg','image/png','image/webp'].includes(f.type))return 'Ảnh cá nhân chỉ hỗ trợ JPG, PNG hoặc WEBP.';if(f.size>MAX_PROFILE_PHOTO_BYTES)return 'Ảnh cá nhân tối đa 5 MB.';return '';}
+function imageExtension(t){return t==='image/png'?'png':t==='image/webp'?'webp':'jpg';}
+function opportunityTypeName(t){return ({class:'Lớp học',training:'Đào tạo / Tập huấn',activity:'Hoạt động',event:'Sự kiện'})[t]||'Hoạt động tình nguyện';}
+function formatViDateTime(v){if(!v)return '';const d=new Date(v);if(Number.isNaN(d.getTime()))return String(v);return new Intl.DateTimeFormat('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',dateStyle:'short',timeStyle:'short'}).format(d);}
 async function newApplicationCode(env){for(let i=0;i<5;i++){const d=new Date(), code=`TNV-${d.getFullYear()}-${randomToken(4).toUpperCase()}`;const e=await env.DB.prepare('SELECT id FROM volunteer_applications WHERE application_code=?').bind(code).first();if(!e)return code;}return `TNV-${Date.now()}`;}
 async function requireUser(request,env){const token=getCookie(request,'sfn_session');if(!token)return null;const h=await hashSessionToken(token);return await env.DB.prepare(`SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>? AND u.status='active' LIMIT 1`).bind(h,new Date().toISOString()).first();}
 function publicUser(u){return{id:u.id,email:u.email,fullName:u.full_name,role:u.role,status:u.status,unitId:u.unit_id||null,adminScope:u.admin_scope||'none'};}

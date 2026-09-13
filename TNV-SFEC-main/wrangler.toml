@@ -10,3 +10,11 @@ binding = "ASSETS"
 binding = "DB"
 database_name = "tnv-sfec"
 database_id = "d939abd6-c877-4234-be69-60b5a69d52a8"
+
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "tnv-sfn-files"
+
+[vars]
+MAIL_FROM = "Sky First · Tình nguyện viên <tnv@skyfirst.io.vn>"
+APP_URL = "https://tnv.skyfirst.io.vn"

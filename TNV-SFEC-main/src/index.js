@@ -142,6 +142,21 @@ async function api(request, env, url) {
   if(!user) return json({ok:false,error:'Phiên đăng nhập không hợp lệ hoặc đã hết hạn.'},401);
   if(url.pathname==='/api/me'&&method==='GET') return json({ok:true,user:publicUser(user)});
 
+  if(url.pathname==='/api/profile'&&method==='GET') {
+    const p=await env.DB.prepare(`SELECT p.*,u.name unit_name FROM volunteer_profiles p LEFT JOIN units u ON u.id=p.unit_id WHERE p.user_id=? LIMIT 1`).bind(user.id).first()||{};
+    const fields=[p.phone,p.date_of_birth,p.school_class_unit,p.bio,p.joined_at];
+    return json({ok:true,profile:p,completion:Math.round(fields.filter(Boolean).length/fields.length*100)});
+  }
+  if(url.pathname==='/api/profile'&&method==='PATCH') {
+    const b=await readJson(request); const phone=clean(b.phone,40), dob=nullableText(b.dateOfBirth), school=clean(b.schoolClassUnit,180), bio=clean(b.bio,2000);
+    await env.DB.prepare(`INSERT INTO volunteer_profiles(user_id,phone,date_of_birth,school_class_unit,bio,joined_at) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(user_id) DO UPDATE SET phone=excluded.phone,date_of_birth=excluded.date_of_birth,school_class_unit=excluded.school_class_unit,bio=excluded.bio,updated_at=CURRENT_TIMESTAMP`).bind(user.id,phone||null,dob,school||null,bio||null).run();
+    return json({ok:true});
+  }
+  if(url.pathname==='/api/my-activities'&&method==='GET') {
+    const {results}=await env.DB.prepare(`SELECT r.status registration_status,o.title,o.type,o.start_at,o.end_at,u.name unit_name FROM registrations r JOIN opportunities o ON o.id=r.opportunity_id LEFT JOIN units u ON u.id=o.unit_id WHERE r.user_id=? ORDER BY COALESCE(o.start_at,r.created_at) DESC`).bind(user.id).all();
+    return json({ok:true,items:results||[]});
+  }
+
   if(url.pathname==='/api/dashboard'&&method==='GET') {
     const a=await env.DB.prepare("SELECT COUNT(*) total FROM registrations WHERE user_id=? AND status='approved'").bind(user.id).first();
     const t=await env.DB.prepare("SELECT COUNT(*) total FROM tasks WHERE user_id=? AND status NOT IN ('done','cancelled')").bind(user.id).first();

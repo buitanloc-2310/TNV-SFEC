@@ -10,8 +10,8 @@
     "db:schema:local": "wrangler d1 execute tnv-sfec --local --file=./schema.sql",
     "db:inspect:remote": "wrangler d1 execute tnv-sfec --remote --command=\"SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name;\""
   },
-  "devDependencies": {
-    "wrangler": "^4.0.0"
+"devDependencies": {
+  "wrangler": "4.145.0"
   },
   "engines": {
     "node": ">=22"

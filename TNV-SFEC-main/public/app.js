@@ -44,7 +44,7 @@ function appTable(items,compact=false){
             <td>
               <b>${esc(a.application_code)}</b><br>
               ${esc(a.full_name)}
-              ${a.profile_photo_token?`<div class="application-photo"><img src="/api/public/application-photo/${encodeURIComponent(a.application_code)}?token=${encodeURIComponent(a.profile_photo_token)}" alt="Ảnh ${esc(a.full_name)}" loading="lazy"></div>`:''}
+              ${a.profile_photo_key?`<div class="application-photo"><img src="/api/admin/applications/${a.id}/photo" alt="Ảnh ${esc(a.full_name)}" loading="lazy"></div>`:''}
               <div class="sub">${fmt(a.created_at)}</div>
             </td>
             <td>${esc(a.opportunity_title)}</td>

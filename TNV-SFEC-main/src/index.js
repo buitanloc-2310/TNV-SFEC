@@ -14,8 +14,8 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     try {
-      if (url.pathname.startsWith('/api/')) return await api(request, env, url);
-      return env.ASSETS.fetch(request);
+      const response = url.pathname.startsWith('/api/') ? await api(request, env, url) : await env.ASSETS.fetch(request);
+      return withSecurityHeaders(response, url.pathname);
     } catch (error) {
       console.error('SFN TNV Portal Error:', error);
       return json({ ok:false, error:'Lỗi hệ thống. Vui lòng thử lại sau.' }, 500);
@@ -31,7 +31,7 @@ async function api(request, env, url) {
 
   if (url.pathname === '/api/status' && method === 'GET') {
     const admin = await env.DB.prepare("SELECT id FROM users WHERE role='admin' LIMIT 1").first();
-    return json({ ok:true, setupRequired:!admin });
+    return json({ ok:true });
   }
 
   if (url.pathname === '/api/public/units' && method === 'GET') {
@@ -79,15 +79,21 @@ async function api(request, env, url) {
     const opp = await env.DB.prepare(`SELECT o.id,o.type,o.title,o.unit_id,o.start_at,o.end_at,o.registration_deadline,u.name unit_name,u.notification_email FROM opportunities o LEFT JOIN units u ON u.id=o.unit_id WHERE o.id=? AND o.status='open' LIMIT 1`).bind(opportunityId).first();
     if (!opp) return json({ok:false,error:'Cơ hội này hiện không mở đăng ký.'},404);
     if (opp.registration_deadline && Date.parse(opp.registration_deadline) < Date.now()) return json({ok:false,error:'Đã hết thời hạn đăng ký.'},409);
-    if(!env.FILES) return json({ok:false,error:'Kho lưu trữ ảnh TNV chưa được cấu hình (R2 binding FILES).'},503);
+    if(!env.FILES) return json({ok:false,error:'Hiện chưa thể tiếp nhận ảnh. Vui lòng thử lại sau.'},503);
+    const duplicate=await env.DB.prepare(`SELECT application_code,status FROM volunteer_applications WHERE opportunity_id=? AND LOWER(email)=? AND status NOT IN ('rejected') ORDER BY id DESC LIMIT 1`).bind(opp.id,email).first();
+    if(duplicate) return json({ok:false,error:`Bạn đã có hồ sơ cho cơ hội này (mã ${duplicate.application_code}). Vui lòng tra cứu hồ sơ hiện có thay vì gửi lại.`},409);
+    const photoBytes=new Uint8Array(await profilePhoto.arrayBuffer());
+    const detectedType=detectImageType(photoBytes);
+    if(!detectedType || detectedType!==profilePhoto.type) return json({ok:false,error:'Tệp ảnh không đúng định dạng JPG, PNG hoặc WEBP.'},400);
     const code = await newApplicationCode(env);
-    const photoToken=randomToken(24), photoExt=imageExtension(profilePhoto.type), photoKey=`applications/${code}/profile-${crypto.randomUUID()}.${photoExt}`;
-    await env.FILES.put(photoKey,profilePhoto.stream(),{httpMetadata:{contentType:profilePhoto.type},customMetadata:{applicationCode:code,kind:'profile-photo'}});
+    const photoToken=randomToken(24), photoExt=imageExtension(detectedType), photoKey=`applications/${code}/profile-${crypto.randomUUID()}.${photoExt}`;
+    await env.FILES.put(photoKey,photoBytes,{httpMetadata:{contentType:detectedType},customMetadata:{applicationCode:code,kind:'profile-photo'}});
     try{
       await env.DB.prepare(`INSERT INTO volunteer_applications(application_code,opportunity_id,unit_id,full_name,date_of_birth,email,phone,school_class_unit,experience,motivation,note,profile_photo_key,profile_photo_token,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'received')`)
         .bind(code,opp.id,opp.unit_id||null,fullName,nullableText(b.dateOfBirth),email,phone,school,clean(b.experience,2000)||null,clean(b.motivation,2000)||null,clean(b.note,1000)||null,photoKey,photoToken).run();
     }catch(e){await env.FILES.delete(photoKey).catch(()=>{});throw e;}
-    await sendApplicationEmails(env,{code,opportunity:opp,fullName,email,phone,school,profilePhotoKey:photoKey,profilePhotoToken:photoToken});
+    const delivery=await sendApplicationEmails(env,{code,opportunity:opp,fullName,email,phone,school,profilePhotoKey:photoKey,profilePhotoToken:photoToken});
+    try{await env.DB.prepare('UPDATE volunteer_applications SET email_delivery_status=?,email_delivery_detail=?,updated_at=CURRENT_TIMESTAMP WHERE application_code=?').bind(delivery.ok?'sent':'failed',delivery.detail||null,code).run();}catch{}
     return json({ok:true,applicationCode:code,message:`Hồ sơ đã được tiếp nhận. Mã hồ sơ: ${code}`},201);
   }
 
@@ -125,15 +131,19 @@ async function api(request, env, url) {
   }
 
   if (url.pathname === '/api/login' && method === 'POST') {
-    const b=await readJson(request), email=normalizeEmail(b.email), password=String(b.password||'');
-    const rl=await rateLimit(env,`login:${clientIp(request)}:${email||'unknown'}`,8,900); if(!rl.ok) return json({ok:false,error:'Đăng nhập thất bại quá nhiều lần. Vui lòng thử lại sau.'},429,{'Retry-After':String(rl.retryAfter)});
+    const b=await readJson(request), email=normalizeEmail(b.email), password=String(b.password||''), ip=clientIp(request);
+    const ipCheck=await rateLimitPeek(env,`login-ip:${ip}`,30,900); if(!ipCheck.ok) return json({ok:false,error:'Có quá nhiều lần đăng nhập từ kết nối này. Vui lòng thử lại sau.'},429,{'Retry-After':String(ipCheck.retryAfter)});
+    const accountCheck=await rateLimitPeek(env,`login-account:${ip}:${email||'unknown'}`,8,900); if(!accountCheck.ok) return json({ok:false,error:'Đăng nhập thất bại quá nhiều lần. Vui lòng thử lại sau.'},429,{'Retry-After':String(accountCheck.retryAfter)});
     const u=await env.DB.prepare('SELECT * FROM users WHERE email=? LIMIT 1').bind(email).first();
     const iterations=Number(u?.password_iterations||LEGACY_PBKDF2_ITERATIONS);
-    if(!u||u.status!=='active'||!u.salt||!(await verifyPassword(password,u.salt,u.password_hash,iterations))) return json({ok:false,error:'Email hoặc mật khẩu không đúng.'},401);
+    const valid=Boolean(u&&u.status==='active'&&u.salt&&await verifyPassword(password,u.salt,u.password_hash,iterations));
+    if(!valid){await Promise.all([rateLimit(env,`login-ip:${ip}`,30,900),rateLimit(env,`login-account:${ip}:${email||'unknown'}`,8,900)]);return json({ok:false,error:'Email hoặc mật khẩu không đúng.'},401);}
+    await clearRateLimit(env,`login-account:${ip}:${email}`);
     if(iterations<PBKDF2_ITERATIONS){const upgraded=await hashPassword(password,null,PBKDF2_ITERATIONS);await env.DB.prepare('UPDATE users SET password_hash=?,salt=?,password_iterations=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(upgraded.hash,upgraded.salt,PBKDF2_ITERATIONS,u.id).run();}
     await env.DB.prepare('DELETE FROM sessions WHERE expires_at<=?').bind(new Date().toISOString()).run();
     const token=randomToken(32), tokenHash=await hashSessionToken(token), expires=new Date(Date.now()+SESSION_DAYS*86400000).toISOString();
     await env.DB.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').bind(tokenHash,u.id,expires).run();
+    await env.DB.prepare(`DELETE FROM sessions WHERE user_id=? AND token_hash NOT IN (SELECT token_hash FROM sessions WHERE user_id=? ORDER BY created_at DESC LIMIT 4)`).bind(u.id,u.id).run();
     return json({ok:true,user:publicUser({...u,password_iterations:Math.max(iterations,PBKDF2_ITERATIONS)})},200,{'Set-Cookie':sessionCookie(token,SESSION_DAYS)});
   }
 
@@ -154,11 +164,14 @@ async function api(request, env, url) {
     if(!(await verifyPassword(currentPassword,user.salt,user.password_hash,iterations))) return json({ok:false,error:'Mật khẩu hiện tại không đúng.'},401);
     const h=await hashPassword(newPassword,null,PBKDF2_ITERATIONS);
     await env.DB.prepare('UPDATE users SET password_hash=?,salt=?,password_iterations=?,must_change_password=0,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(h.hash,h.salt,PBKDF2_ITERATIONS,user.id).run();
-    const token=getCookie(request,'sfn_session'), tokenHash=token?await hashSessionToken(token):'';
-    await env.DB.prepare('DELETE FROM sessions WHERE user_id=? AND token_hash<>?').bind(user.id,tokenHash).run();
-    await audit(env,user,'password.changed','user',user.id,{sessionsRevoked:true});
-    return json({ok:true,message:'Đã đổi mật khẩu và đăng xuất các phiên khác.'});
+    await env.DB.prepare('DELETE FROM sessions WHERE user_id=?').bind(user.id).run();
+    const newToken=randomToken(32), newTokenHash=await hashSessionToken(newToken), expires=new Date(Date.now()+SESSION_DAYS*86400000).toISOString();
+    await env.DB.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').bind(newTokenHash,user.id,expires).run();
+    await audit(env,user,'password.changed','user',user.id,{sessionsRevoked:true,sessionRotated:true});
+    return json({ok:true,message:'Đã đổi mật khẩu và đăng xuất các phiên khác.'},200,{'Set-Cookie':sessionCookie(newToken,SESSION_DAYS)});
   }
+
+  if(Number(user.must_change_password||0)===1) return json({ok:false,error:'Bạn cần đổi mật khẩu tạm trước khi sử dụng chức năng khác.',code:'PASSWORD_CHANGE_REQUIRED'},403);
 
   if(url.pathname==='/api/profile'&&method==='GET') {
     const p=await env.DB.prepare(`SELECT p.*,u.name unit_name FROM volunteer_profiles p LEFT JOIN units u ON u.id=p.unit_id WHERE p.user_id=? LIMIT 1`).bind(user.id).first()||{};
@@ -231,18 +244,23 @@ async function ensureSchema(env){
     `ALTER TABLE volunteer_applications ADD COLUMN profile_photo_key TEXT`,
     `ALTER TABLE volunteer_applications ADD COLUMN profile_photo_token TEXT`,
     `ALTER TABLE users ADD COLUMN password_iterations INTEGER NOT NULL DEFAULT 100000`,
-    `ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0`
+    `ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE volunteer_applications ADD COLUMN email_delivery_status TEXT`,
+    `ALTER TABLE volunteer_applications ADD COLUMN email_delivery_detail TEXT`
   ];
   for(const sql of alters){try{await env.DB.prepare(sql).run();}catch(e){if(!String(e).toLowerCase().includes('duplicate column')) console.log('schema compatibility:',String(e));}}
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS rate_limits(key TEXT PRIMARY KEY,count INTEGER NOT NULL DEFAULT 0,window_start INTEGER NOT NULL)`).run();
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS audit_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,actor_user_id INTEGER,action TEXT NOT NULL,entity_type TEXT,entity_id INTEGER,details TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_applications_lookup ON volunteer_applications(application_code,email)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_applications_opp_email ON volunteer_applications(opportunity_id,email,status)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_tasks_user_status ON tasks(user_id,status,due_at)`).run();
   // Nâng tài khoản admin cũ thành quản trị hệ thống, không đổi ID/tài khoản.
   try{await env.DB.prepare(`UPDATE users SET admin_scope='system' WHERE role='admin' AND (admin_scope IS NULL OR admin_scope='none') AND email=?`).bind(normalizeEmail(env.ADMIN_EMAIL||LEGACY_ADMIN_EMAIL)).run();}catch{}
 }
 
 async function sendApplicationEmails(env,x){
-  if(!env.RESEND_API_KEY) return;
+  if(!env.RESEND_API_KEY) return {ok:false,detail:'Dịch vụ email chưa được cấu hình.'};
   const configured=normalizeEmail(x.opportunity.notification_email||'');
   const fallbackReceiver=normalizeEmail(env.APPLICATION_RECEIVER_EMAIL||DEFAULT_APPLICATION_RECEIVER_EMAIL);
   const to=(!configured || configured===normalizeEmail(env.ADMIN_EMAIL||LEGACY_ADMIN_EMAIL)) ? fallbackReceiver : configured;
@@ -265,10 +283,12 @@ async function sendApplicationEmails(env,x){
     fetch('https://api.resend.com/emails',{method:'POST',headers,body:JSON.stringify({from,to:[to],subject:`[TNV] Hồ sơ mới ${x.code}`,text:adminText})}),
     fetch('https://api.resend.com/emails',{method:'POST',headers,body:JSON.stringify({from,to:[x.email],subject:`Sky First | Xác nhận đăng ký ${x.code}`,html:applicantHtml,text:applicantText})})
   ]);
+  const failures=[];
   for(const [i,result] of results.entries()){
-    if(result.status==='rejected'){console.error('Resend delivery error',i,result.reason);continue;}
-    if(!result.value.ok){console.error('Resend rejected email',i,result.value.status,await result.value.text().catch(()=>''));}
+    if(result.status==='rejected'){console.error('Resend delivery error',i,result.reason);failures.push(`request-${i}`);continue;}
+    if(!result.value.ok){console.error('Resend rejected email',i,result.value.status,await result.value.text().catch(()=>''));failures.push(`http-${i}-${result.value.status}`);}
   }
+  return {ok:failures.length===0,detail:failures.length?failures.join(','):null};
 }
 const TNV_CONFIRMATION_EMAIL_TEMPLATE = String.raw`<!doctype html>
 <html lang="vi">
@@ -410,7 +430,7 @@ Thông tin đăng ký của bạn đã được gửi đến địa chỉ email 
 <tr>
 <td style="padding:10px 42px 34px;">
 <div style="border-top:1px solid #e7edf3;padding-top:25px;">
-<div style="font-size:12px;font-weight:800;letter-spacing:1.4px;color:#64788b;text-transform:uppercase;margin-bottom:8px;">HỆ SINH THÁI TRỰC TUYẾN SKY FIRST</div>
+<div style="font-size:12px;font-weight:800;letter-spacing:1.4px;color:#64788b;text-transform:uppercase;margin-bottom:8px;">CÁC CỔNG TRỰC TUYẾN SKY FIRST</div>
 <div style="font-size:14px;line-height:1.65;color:#6d8091;margin-bottom:18px;">Các không gian trực tuyến được tách theo từng nhu cầu để bạn dễ truy cập đúng nơi cần thiết.</div>
 
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
@@ -477,11 +497,12 @@ Thông tin đăng ký của bạn đã được gửi đến địa chỉ email 
 `;
 function renderTemplate(t,vars){return String(t).replace(/\{\{([A-Z0-9_]+)\}\}/g,(_,k)=>vars[k]??'');}
 function escapeHtml(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-function validateProfilePhoto(f){if(!f || !(f instanceof File))return 'Vui lòng tải lên ảnh cá nhân để hoàn tất đăng ký.';if(!['image/jpeg','image/png','image/webp'].includes(f.type))return 'Ảnh cá nhân chỉ hỗ trợ JPG, PNG hoặc WEBP.';if(f.size>MAX_PROFILE_PHOTO_BYTES)return 'Ảnh cá nhân tối đa 5 MB.';return '';}
+function validateProfilePhoto(f){if(!f || !(f instanceof File))return 'Vui lòng tải lên ảnh cá nhân để hoàn tất đăng ký.';if(!['image/jpeg','image/png','image/webp'].includes(f.type))return 'Ảnh cá nhân chỉ hỗ trợ JPG, PNG hoặc WEBP.';if(f.size<12)return 'Tệp ảnh không hợp lệ.';if(f.size>MAX_PROFILE_PHOTO_BYTES)return 'Ảnh cá nhân tối đa 5 MB.';return '';}
+function detectImageType(b){if(b.length>=3&&b[0]===0xff&&b[1]===0xd8&&b[2]===0xff)return'image/jpeg';if(b.length>=8&&b[0]===0x89&&b[1]===0x50&&b[2]===0x4e&&b[3]===0x47&&b[4]===0x0d&&b[5]===0x0a&&b[6]===0x1a&&b[7]===0x0a)return'image/png';if(b.length>=12&&String.fromCharCode(...b.slice(0,4))==='RIFF'&&String.fromCharCode(...b.slice(8,12))==='WEBP')return'image/webp';return'';}
 function imageExtension(t){return t==='image/png'?'png':t==='image/webp'?'webp':'jpg';}
 function opportunityTypeName(t){return ({class:'Lớp học',training:'Đào tạo / Tập huấn',activity:'Hoạt động',event:'Sự kiện'})[t]||'Hoạt động tình nguyện';}
 function formatViDateTime(v){if(!v)return '';const d=new Date(v);if(Number.isNaN(d.getTime()))return String(v);return new Intl.DateTimeFormat('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',dateStyle:'short',timeStyle:'short'}).format(d);}
-async function newApplicationCode(env){for(let i=0;i<5;i++){const d=new Date(), code=`TNV-${d.getFullYear()}-${randomToken(4).toUpperCase()}`;const e=await env.DB.prepare('SELECT id FROM volunteer_applications WHERE application_code=?').bind(code).first();if(!e)return code;}return `TNV-${Date.now()}`;}
+async function newApplicationCode(env){for(let i=0;i<12;i++){const d=new Date(), code=`TNV-${d.getFullYear()}-${randomToken(6).toUpperCase()}`;const e=await env.DB.prepare('SELECT id FROM volunteer_applications WHERE application_code=?').bind(code).first();if(!e)return code;}throw new Error('Không thể tạo mã hồ sơ duy nhất.');}
 async function requireUser(request,env){const token=getCookie(request,'sfn_session');if(!token)return null;const h=await hashSessionToken(token);return await env.DB.prepare(`SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>? AND u.status='active' LIMIT 1`).bind(h,new Date().toISOString()).first();}
 function publicUser(u){return{id:u.id,email:u.email,fullName:u.full_name,role:u.role,status:u.status,unitId:u.unit_id||null,adminScope:u.admin_scope||'none',mustChangePassword:Boolean(Number(u.must_change_password||0))};}
 async function audit(env,user,action,entityType=null,entityId=null,details=null){try{await env.DB.prepare('INSERT INTO audit_logs(actor_user_id,action,entity_type,entity_id,details) VALUES(?,?,?,?,?)').bind(user?.id||null,action,entityType,entityId,details?JSON.stringify(details):null).run();}catch(e){console.error('audit log failed',e);}}
@@ -496,5 +517,8 @@ function sessionCookie(v,days){return `sfn_session=${encodeURIComponent(v)}; Pat
 async function readJson(r){try{return await r.json();}catch{return {};}} function clean(v,n=500){return String(v??'').trim().slice(0,n);} function nullableText(v){const s=String(v??'').trim();return s||null;} function normalizeEmail(v){return String(v??'').trim().toLowerCase();} function isValidEmail(v){return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);} function validatePassword(v){if(v.length<10)return'Mật khẩu cần ít nhất 10 ký tự.';return null;}
 function clientIp(r){return clean(r.headers.get('CF-Connecting-IP')||r.headers.get('X-Forwarded-For')?.split(',')[0]||'unknown',100);}
 function validRequestOrigin(r,env){const origin=r.headers.get('Origin');if(!origin)return true;try{const incoming=new URL(origin).origin;const requestOrigin=new URL(r.url).origin;if(incoming===requestOrigin)return true;if(env.APP_URL&&incoming===new URL(env.APP_URL).origin)return true;return false;}catch{return false;}}
-async function rateLimit(env,key,limit,windowSeconds){const now=Math.floor(Date.now()/1000),row=await env.DB.prepare('SELECT count,window_start FROM rate_limits WHERE key=?').bind(key).first();if(!row||now-Number(row.window_start)>=windowSeconds){await env.DB.prepare('INSERT INTO rate_limits(key,count,window_start) VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET count=1,window_start=excluded.window_start').bind(key,now).run();return{ok:true,retryAfter:0};}if(Number(row.count)>=limit)return{ok:false,retryAfter:Math.max(1,windowSeconds-(now-Number(row.window_start)))};await env.DB.prepare('UPDATE rate_limits SET count=count+1 WHERE key=?').bind(key).run();return{ok:true,retryAfter:0};}
+async function rateLimitPeek(env,key,limit,windowSeconds){const now=Math.floor(Date.now()/1000),row=await env.DB.prepare('SELECT count,window_start FROM rate_limits WHERE key=?').bind(key).first();if(!row||now-Number(row.window_start)>=windowSeconds)return{ok:true,retryAfter:0};return Number(row.count)>=limit?{ok:false,retryAfter:Math.max(1,windowSeconds-(now-Number(row.window_start)))}:{ok:true,retryAfter:0};}
+async function rateLimit(env,key,limit,windowSeconds){const now=Math.floor(Date.now()/1000);const row=await env.DB.prepare(`INSERT INTO rate_limits(key,count,window_start) VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET count=CASE WHEN (? - window_start)>=? THEN 1 ELSE count+1 END,window_start=CASE WHEN (? - window_start)>=? THEN ? ELSE window_start END RETURNING count,window_start`).bind(key,now,now,windowSeconds,now,windowSeconds,now).first();const count=Number(row?.count||1),start=Number(row?.window_start||now);return count>limit?{ok:false,retryAfter:Math.max(1,windowSeconds-(now-start))}:{ok:true,retryAfter:0};}
+async function clearRateLimit(env,key){try{await env.DB.prepare('DELETE FROM rate_limits WHERE key=?').bind(key).run();}catch{}}
+function withSecurityHeaders(response,path=''){const h=new Headers(response.headers);h.set('X-Content-Type-Options','nosniff');h.set('Referrer-Policy','strict-origin-when-cross-origin');h.set('Permissions-Policy','camera=(), microphone=(), geolocation=()');h.set('X-Frame-Options','DENY');if(!path.startsWith('/api/')&&(h.get('Content-Type')||'').includes('text/html'))h.set('Content-Security-Policy',"default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'");return new Response(response.body,{status:response.status,statusText:response.statusText,headers:h});}
 function json(data,status=200,headers={}){return new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...headers}});}

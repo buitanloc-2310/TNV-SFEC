@@ -1,7 +1,7 @@
 PRAGMA foreign_keys = ON;
 
 -- Cổng Tình nguyện viên Sky First. Lược đồ này chỉ dùng khi tạo CSDL mới.
--- Với CSDL D1 hiện hữu, Worker tự bổ sung các bảng/cột mới theo hướng không phá huỷ.
+-- Với CSDL hiện hữu, dùng migration trong thư mục migrations; Worker chỉ giữ lớp tương thích để tránh lỗi khi nâng cấp.
 -- Không đổi database_id, không xoá bảng và không đặt lại bất kỳ ID hiện hữu nào.
 
 CREATE TABLE IF NOT EXISTS users (
@@ -86,6 +86,8 @@ CREATE TABLE IF NOT EXISTS volunteer_applications (
   note TEXT,
   profile_photo_key TEXT,
   profile_photo_token TEXT,
+  email_delivery_status TEXT,
+  email_delivery_detail TEXT,
   status TEXT NOT NULL DEFAULT 'received' CHECK (status IN ('received','reviewing','approved','rejected','account_issued')),
   reviewed_by INTEGER,
   reviewed_at TEXT,
@@ -135,7 +137,10 @@ CREATE TABLE IF NOT EXISTS attendance (
   note TEXT,
   confirmed_by INTEGER,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE (user_id,opportunity_id,attendance_date)
+  UNIQUE (user_id,opportunity_id,attendance_date),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (opportunity_id) REFERENCES opportunities(id) ON DELETE CASCADE,
+  FOREIGN KEY (confirmed_by) REFERENCES users(id) ON DELETE SET NULL
 );
 
 -- Các bảng cũ được giữ để tương thích dữ liệu; UI mới không hiển thị các module chưa có luồng thật.
@@ -152,6 +157,9 @@ CREATE INDEX IF NOT EXISTS idx_applications_code ON volunteer_applications(appli
 CREATE INDEX IF NOT EXISTS idx_applications_unit ON volunteer_applications(unit_id);
 CREATE INDEX IF NOT EXISTS idx_applications_status ON volunteer_applications(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_user_status ON tasks(user_id,status,due_at);
+CREATE INDEX IF NOT EXISTS idx_applications_lookup ON volunteer_applications(application_code,email);
+CREATE INDEX IF NOT EXISTS idx_applications_opp_email ON volunteer_applications(opportunity_id,email,status);
 
 
 CREATE TABLE IF NOT EXISTS rate_limits (key TEXT PRIMARY KEY,count INTEGER NOT NULL DEFAULT 0,window_start INTEGER NOT NULL);

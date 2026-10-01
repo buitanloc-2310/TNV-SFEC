@@ -1,5 +1,5 @@
 const LEGACY_ADMIN_EMAIL = 'skyfirst.ec@gmail.com';
-const LEGACY_APPLICATION_RECEIVER_EMAIL = 'nhansu.sfn@gmail.com';
+const DEFAULT_APPLICATION_RECEIVER_EMAIL = 'tnv@skyfirst.io.vn';
 const DEFAULT_MAIL_FROM = 'Sky First · Tình nguyện viên <tnv@skyfirst.io.vn>';
 const MAX_PROFILE_PHOTO_BYTES = 5 * 1024 * 1024;
 const SESSION_DAYS = 7;
@@ -7,6 +7,8 @@ const LEGACY_PBKDF2_ITERATIONS = 100000;
 const PBKDF2_ITERATIONS = 310000; // OWASP-aligned stronger default; legacy hashes are upgraded after successful login.
 const SFEC_CODE = 'SFEC';
 const SFEC_NAME = 'Câu lạc bộ Tiếng Anh The Sky First (SFEC)';
+
+let schemaReadyPromise;
 
 export default {
   async fetch(request, env) {
@@ -22,7 +24,8 @@ export default {
 };
 
 async function api(request, env, url) {
-  await ensureSchema(env);
+  if(!schemaReadyPromise) schemaReadyPromise=ensureSchema(env);
+  await schemaReadyPromise;
   const method = request.method.toUpperCase();
   if (['POST','PATCH','PUT','DELETE'].includes(method) && !validRequestOrigin(request, env)) return json({ok:false,error:'Nguồn yêu cầu không hợp lệ.'},403);
 
@@ -131,7 +134,7 @@ async function api(request, env, url) {
     await env.DB.prepare('DELETE FROM sessions WHERE expires_at<=?').bind(new Date().toISOString()).run();
     const token=randomToken(32), tokenHash=await hashSessionToken(token), expires=new Date(Date.now()+SESSION_DAYS*86400000).toISOString();
     await env.DB.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').bind(tokenHash,u.id,expires).run();
-    return json({ok:true,user:publicUser(u)},200,{'Set-Cookie':sessionCookie(token,SESSION_DAYS)});
+    return json({ok:true,user:publicUser({...u,password_iterations:Math.max(iterations,PBKDF2_ITERATIONS)})},200,{'Set-Cookie':sessionCookie(token,SESSION_DAYS)});
   }
 
   if (url.pathname === '/api/logout' && method === 'POST') {
@@ -142,6 +145,20 @@ async function api(request, env, url) {
   const user=await requireUser(request,env);
   if(!user) return json({ok:false,error:'Phiên đăng nhập không hợp lệ hoặc đã hết hạn.'},401);
   if(url.pathname==='/api/me'&&method==='GET') return json({ok:true,user:publicUser(user)});
+
+  if(url.pathname==='/api/change-password'&&method==='POST') {
+    const b=await readJson(request), currentPassword=String(b.currentPassword||''), newPassword=String(b.newPassword||'');
+    const pe=validatePassword(newPassword); if(pe) return json({ok:false,error:pe},400);
+    if(currentPassword===newPassword) return json({ok:false,error:'Mật khẩu mới phải khác mật khẩu hiện tại.'},400);
+    const iterations=Number(user.password_iterations||LEGACY_PBKDF2_ITERATIONS);
+    if(!(await verifyPassword(currentPassword,user.salt,user.password_hash,iterations))) return json({ok:false,error:'Mật khẩu hiện tại không đúng.'},401);
+    const h=await hashPassword(newPassword,null,PBKDF2_ITERATIONS);
+    await env.DB.prepare('UPDATE users SET password_hash=?,salt=?,password_iterations=?,must_change_password=0,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(h.hash,h.salt,PBKDF2_ITERATIONS,user.id).run();
+    const token=getCookie(request,'sfn_session'), tokenHash=token?await hashSessionToken(token):'';
+    await env.DB.prepare('DELETE FROM sessions WHERE user_id=? AND token_hash<>?').bind(user.id,tokenHash).run();
+    await audit(env,user,'password.changed','user',user.id,{sessionsRevoked:true});
+    return json({ok:true,message:'Đã đổi mật khẩu và đăng xuất các phiên khác.'});
+  }
 
   if(url.pathname==='/api/profile'&&method==='GET') {
     const p=await env.DB.prepare(`SELECT p.*,u.name unit_name FROM volunteer_profiles p LEFT JOIN units u ON u.id=p.unit_id WHERE p.user_id=? LIMIT 1`).bind(user.id).first()||{};
@@ -174,6 +191,7 @@ async function api(request, env, url) {
     const systemAdmin=(user.admin_scope||'system')==='system', scopedUnitId=user.unit_id?Number(user.unit_id):null;
     let photoAdmin=url.pathname.match(/^\/api\/admin\/applications\/(\d+)\/photo$/); if(photoAdmin&&method==='GET'){const sql=`SELECT profile_photo_key FROM volunteer_applications WHERE id=? ${systemAdmin?'':'AND unit_id=?'} LIMIT 1`;const a=systemAdmin?await env.DB.prepare(sql).bind(+photoAdmin[1]).first():await env.DB.prepare(sql).bind(+photoAdmin[1],scopedUnitId).first();if(!a?.profile_photo_key)return new Response('Not found',{status:404});const obj=await env.FILES.get(a.profile_photo_key);if(!obj)return new Response('Not found',{status:404});const h=new Headers();obj.writeHttpMetadata(h);h.set('Cache-Control','private, no-store');h.set('X-Content-Type-Options','nosniff');h.set('Content-Security-Policy',"default-src 'none'; sandbox");return new Response(obj.body,{headers:h});}
     const scope=(alias='')=>systemAdmin?{sql:'',bind:[]}:{sql:`${alias?' AND '+alias+'.':' AND '}unit_id=?`,bind:[scopedUnitId]};
+    if(url.pathname==='/api/admin/audit-logs'&&method==='GET'){if(!systemAdmin)return json({ok:false,error:'Chỉ Quản trị hệ thống được xem nhật ký quản trị.'},403);const {results}=await env.DB.prepare(`SELECT a.id,a.action,a.entity_type,a.entity_id,a.details,a.created_at,u.full_name actor_name,u.email actor_email FROM audit_logs a LEFT JOIN users u ON u.id=a.actor_user_id ORDER BY a.id DESC LIMIT 200`).all();return json({ok:true,items:results||[]})}
     if(url.pathname==='/api/admin/dashboard'&&method==='GET'){
       const q=async(sql,bind=[])=>await env.DB.prepare(sql).bind(...bind).first();
       const os=systemAdmin?await q("SELECT COUNT(*) total FROM opportunities WHERE status='open'"):await q("SELECT COUNT(*) total FROM opportunities WHERE status='open' AND unit_id=?",[scopedUnitId]);
@@ -186,19 +204,19 @@ async function api(request, env, url) {
       return json({ok:true,stats:{openOpportunities:+(os?.total||0),pendingApplications:+(pa?.total||0),activeVolunteers:+(av?.total||0),activeTasks:+(at?.total||0),activeUnits:+(au?.total||0)},recent:results||[]});
     }
     if(url.pathname==='/api/admin/units'&&method==='GET'){const {results}=systemAdmin?await env.DB.prepare('SELECT id,name,code,description,notification_email,status,created_at FROM units ORDER BY name').all():await env.DB.prepare('SELECT id,name,code,description,notification_email,status,created_at FROM units WHERE id=?').bind(scopedUnitId).all();return json({ok:true,items:results||[]})}
-    if(url.pathname==='/api/admin/units'&&method==='POST'){if(!systemAdmin)return json({ok:false,error:'Chỉ Quản trị hệ thống được tạo đơn vị.'},403);const b=await readJson(request),name=clean(b.name,180),code=clean(b.code,50).toUpperCase();if(!name)return json({ok:false,error:'Vui lòng nhập tên đơn vị.'},400);await env.DB.prepare(`INSERT INTO units(name,code,description,notification_email,status) VALUES(?,?,?,?, 'active')`).bind(name,code||null,clean(b.description,1500)||null,normalizeEmail(b.notificationEmail)||null).run();return json({ok:true})}
+    if(url.pathname==='/api/admin/units'&&method==='POST'){if(!systemAdmin)return json({ok:false,error:'Chỉ Quản trị hệ thống được tạo đơn vị.'},403);const b=await readJson(request),name=clean(b.name,180),code=clean(b.code,50).toUpperCase();if(!name)return json({ok:false,error:'Vui lòng nhập tên đơn vị.'},400);await env.DB.prepare(`INSERT INTO units(name,code,description,notification_email,status) VALUES(?,?,?,?, 'active')`).bind(name,code||null,clean(b.description,1500)||null,normalizeEmail(b.notificationEmail)||null).run();await audit(env,user,'unit.created','unit',null,{name,code});return json({ok:true})}
     if(url.pathname==='/api/admin/users'&&method==='GET'){const kind=url.searchParams.get('kind');let extra=kind==='admin'?" AND u.role='admin'":kind==='volunteer'?" AND u.role='volunteer'":'';const sql=`SELECT u.id,u.email,u.full_name,u.role,u.status,u.unit_id,u.admin_scope,x.name unit_name,u.created_at FROM users u LEFT JOIN units x ON x.id=u.unit_id WHERE 1=1 ${systemAdmin?'':'AND u.unit_id=?'} ${extra} ORDER BY u.created_at DESC`;const {results}=systemAdmin?await env.DB.prepare(sql).all():await env.DB.prepare(sql).bind(scopedUnitId).all();return json({ok:true,items:results||[]})}
-    if(url.pathname==='/api/admin/users'&&method==='POST'){const b=await readJson(request),email=normalizeEmail(b.email),fullName=clean(b.fullName,120),password=String(b.password||''),accountType=b.accountType==='unit_admin'?'unit_admin':'volunteer';let unitId=Number(b.unitId||0)||null;if(!systemAdmin)unitId=scopedUnitId;if(!isValidEmail(email)||!fullName||!unitId)return json({ok:false,error:'Họ tên, email và đơn vị là bắt buộc.'},400);if(accountType==='unit_admin'&&!systemAdmin)return json({ok:false,error:'Chỉ Quản trị hệ thống được cấp tài khoản quản trị đơn vị.'},403);const pe=validatePassword(password);if(pe)return json({ok:false,error:pe},400);const {hash,salt}=await hashPassword(password);await env.DB.prepare(`INSERT INTO users(email,full_name,role,password_hash,salt,status,unit_id,admin_scope) VALUES(?,?,?, ?,?,'active',?,?)`).bind(email,fullName,accountType==='unit_admin'?'admin':'volunteer',hash,salt,unitId,accountType==='unit_admin'?'unit':'none').run();return json({ok:true})}
-    let m=url.pathname.match(/^\/api\/admin\/users\/(\d+)$/);if(m&&method==='PATCH'){const b=await readJson(request),st=['active','locked'].includes(b.status)?b.status:null;if(!st)return json({ok:false,error:'Trạng thái không hợp lệ.'},400);const sql=`UPDATE users SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? ${systemAdmin?'':'AND unit_id=?'} AND NOT (role='admin' AND admin_scope='system')`;const r=systemAdmin?await env.DB.prepare(sql).bind(st,+m[1]).run():await env.DB.prepare(sql).bind(st,+m[1],scopedUnitId).run();if(!r.meta?.changes)return json({ok:false,error:'Không thể cập nhật tài khoản này.'},404);return json({ok:true})}
+    if(url.pathname==='/api/admin/users'&&method==='POST'){const b=await readJson(request),email=normalizeEmail(b.email),fullName=clean(b.fullName,120),password=String(b.password||''),accountType=b.accountType==='unit_admin'?'unit_admin':'volunteer';let unitId=Number(b.unitId||0)||null;if(!systemAdmin)unitId=scopedUnitId;if(!isValidEmail(email)||!fullName||!unitId)return json({ok:false,error:'Họ tên, email và đơn vị là bắt buộc.'},400);if(accountType==='unit_admin'&&!systemAdmin)return json({ok:false,error:'Chỉ Quản trị hệ thống được cấp tài khoản quản trị đơn vị.'},403);const pe=validatePassword(password);if(pe)return json({ok:false,error:pe},400);const {hash,salt}=await hashPassword(password);const r=await env.DB.prepare(`INSERT INTO users(email,full_name,role,password_hash,salt,status,unit_id,admin_scope,password_iterations,must_change_password) VALUES(?,?,?, ?,?,'active',?,?,?,1)`).bind(email,fullName,accountType==='unit_admin'?'admin':'volunteer',hash,salt,unitId,accountType==='unit_admin'?'unit':'none',PBKDF2_ITERATIONS).run();await audit(env,user,'user.created','user',r.meta?.last_row_id||null,{email,accountType,unitId});return json({ok:true})}
+    let m=url.pathname.match(/^\/api\/admin\/users\/(\d+)$/);if(m&&method==='PATCH'){const b=await readJson(request),st=['active','locked'].includes(b.status)?b.status:null;if(!st)return json({ok:false,error:'Trạng thái không hợp lệ.'},400);const sql=`UPDATE users SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? ${systemAdmin?'':'AND unit_id=?'} AND NOT (role='admin' AND admin_scope='system')`;const r=systemAdmin?await env.DB.prepare(sql).bind(st,+m[1]).run():await env.DB.prepare(sql).bind(st,+m[1],scopedUnitId).run();if(!r.meta?.changes)return json({ok:false,error:'Không thể cập nhật tài khoản này.'},404);await audit(env,user,'user.status_changed','user',+m[1],{status:st});return json({ok:true})}
     if(url.pathname==='/api/admin/opportunities'&&method==='GET'){const sql=`SELECT o.*,u.name unit_name,u.code unit_code FROM opportunities o LEFT JOIN units u ON u.id=o.unit_id ${systemAdmin?'':'WHERE o.unit_id=?'} ORDER BY o.created_at DESC`;const {results}=systemAdmin?await env.DB.prepare(sql).all():await env.DB.prepare(sql).bind(scopedUnitId).all();return json({ok:true,items:results||[]})}
-    if(url.pathname==='/api/admin/opportunities'&&method==='POST'){const b=await readJson(request),type=String(b.type||''),title=clean(b.title,180);let unitId=Number(b.unitId||0)||null;if(!systemAdmin)unitId=scopedUnitId;const st=['draft','open','closed','cancelled'].includes(b.status)?b.status:'open';if(!['class','activity','event','training'].includes(type)||!title||!unitId)return json({ok:false,error:'Loại, tên và đơn vị là bắt buộc.'},400);await env.DB.prepare(`INSERT INTO opportunities(type,title,unit_id,description,start_at,end_at,registration_deadline,status,created_by) VALUES(?,?,?,?,?,?,?,?,?)`).bind(type,title,unitId,clean(b.description,5000)||null,nullableText(b.startAt),nullableText(b.endAt),nullableText(b.registrationDeadline),st,user.id).run();return json({ok:true})}
-    m=url.pathname.match(/^\/api\/admin\/opportunities\/(\d+)$/);if(m&&method==='PATCH'){const old=await env.DB.prepare(`SELECT * FROM opportunities WHERE id=? ${systemAdmin?'':'AND unit_id=?'}`).bind(+m[1],...(!systemAdmin?[scopedUnitId]:[])).first();if(!old)return json({ok:false,error:'Không tìm thấy hoạt động trong phạm vi quản lý.'},404);const b=await readJson(request),type=['class','activity','event','training'].includes(b.type)?b.type:old.type,title=b.title!==undefined?clean(b.title,180):old.title,st=['draft','open','closed','cancelled'].includes(b.status)?b.status:old.status;let unitId=systemAdmin?(Number(b.unitId||old.unit_id)||old.unit_id):scopedUnitId;await env.DB.prepare(`UPDATE opportunities SET type=?,title=?,unit_id=?,description=?,start_at=?,end_at=?,registration_deadline=?,status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(type,title,unitId,b.description!==undefined?clean(b.description,5000):old.description,b.startAt!==undefined?nullableText(b.startAt):old.start_at,b.endAt!==undefined?nullableText(b.endAt):old.end_at,b.registrationDeadline!==undefined?nullableText(b.registrationDeadline):old.registration_deadline,st,+m[1]).run();return json({ok:true})}
-    if(m&&method==='DELETE'){const id=+m[1];const old=await env.DB.prepare(`SELECT id FROM opportunities WHERE id=? ${systemAdmin?'':'AND unit_id=?'}`).bind(id,...(!systemAdmin?[scopedUnitId]:[])).first();if(!old)return json({ok:false,error:'Không tìm thấy hoạt động.'},404);const a=await env.DB.prepare('SELECT COUNT(*) total FROM volunteer_applications WHERE opportunity_id=?').bind(id).first(),r=await env.DB.prepare('SELECT COUNT(*) total FROM registrations WHERE opportunity_id=?').bind(id).first(),t=await env.DB.prepare('SELECT COUNT(*) total FROM tasks WHERE opportunity_id=?').bind(id).first();if(+(a?.total||0)+ +(r?.total||0)+ +(t?.total||0)>0)return json({ok:false,error:'Hoạt động đã có dữ liệu liên quan. Hãy đóng hoạt động thay vì xóa để bảo toàn lịch sử.'},409);await env.DB.prepare('DELETE FROM opportunities WHERE id=?').bind(id).run();return json({ok:true})}
+    if(url.pathname==='/api/admin/opportunities'&&method==='POST'){const b=await readJson(request),type=String(b.type||''),title=clean(b.title,180);let unitId=Number(b.unitId||0)||null;if(!systemAdmin)unitId=scopedUnitId;const st=['draft','open','closed','cancelled'].includes(b.status)?b.status:'open';if(!['class','activity','event','training'].includes(type)||!title||!unitId)return json({ok:false,error:'Loại, tên và đơn vị là bắt buộc.'},400);await env.DB.prepare(`INSERT INTO opportunities(type,title,unit_id,description,start_at,end_at,registration_deadline,status,created_by) VALUES(?,?,?,?,?,?,?,?,?)`).bind(type,title,unitId,clean(b.description,5000)||null,nullableText(b.startAt),nullableText(b.endAt),nullableText(b.registrationDeadline),st,user.id).run();await audit(env,user,'opportunity.created','opportunity',null,{title,unitId,status:st});return json({ok:true})}
+    m=url.pathname.match(/^\/api\/admin\/opportunities\/(\d+)$/);if(m&&method==='PATCH'){const old=await env.DB.prepare(`SELECT * FROM opportunities WHERE id=? ${systemAdmin?'':'AND unit_id=?'}`).bind(+m[1],...(!systemAdmin?[scopedUnitId]:[])).first();if(!old)return json({ok:false,error:'Không tìm thấy hoạt động trong phạm vi quản lý.'},404);const b=await readJson(request),type=['class','activity','event','training'].includes(b.type)?b.type:old.type,title=b.title!==undefined?clean(b.title,180):old.title,st=['draft','open','closed','cancelled'].includes(b.status)?b.status:old.status;let unitId=systemAdmin?(Number(b.unitId||old.unit_id)||old.unit_id):scopedUnitId;await env.DB.prepare(`UPDATE opportunities SET type=?,title=?,unit_id=?,description=?,start_at=?,end_at=?,registration_deadline=?,status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(type,title,unitId,b.description!==undefined?clean(b.description,5000):old.description,b.startAt!==undefined?nullableText(b.startAt):old.start_at,b.endAt!==undefined?nullableText(b.endAt):old.end_at,b.registrationDeadline!==undefined?nullableText(b.registrationDeadline):old.registration_deadline,st,+m[1]).run();await audit(env,user,'opportunity.updated','opportunity',+m[1],{title,status:st,unitId});return json({ok:true})}
+    if(m&&method==='DELETE'){const id=+m[1];const old=await env.DB.prepare(`SELECT id FROM opportunities WHERE id=? ${systemAdmin?'':'AND unit_id=?'}`).bind(id,...(!systemAdmin?[scopedUnitId]:[])).first();if(!old)return json({ok:false,error:'Không tìm thấy hoạt động.'},404);const a=await env.DB.prepare('SELECT COUNT(*) total FROM volunteer_applications WHERE opportunity_id=?').bind(id).first(),r=await env.DB.prepare('SELECT COUNT(*) total FROM registrations WHERE opportunity_id=?').bind(id).first(),t=await env.DB.prepare('SELECT COUNT(*) total FROM tasks WHERE opportunity_id=?').bind(id).first();if(+(a?.total||0)+ +(r?.total||0)+ +(t?.total||0)>0)return json({ok:false,error:'Hoạt động đã có dữ liệu liên quan. Hãy đóng hoạt động thay vì xóa để bảo toàn lịch sử.'},409);await env.DB.prepare('DELETE FROM opportunities WHERE id=?').bind(id).run();await audit(env,user,'opportunity.deleted','opportunity',id);return json({ok:true})}
     if(url.pathname==='/api/admin/applications'&&method==='GET'){const sql=`SELECT a.*,o.title opportunity_title,u.name unit_name FROM volunteer_applications a JOIN opportunities o ON o.id=a.opportunity_id LEFT JOIN units u ON u.id=a.unit_id ${systemAdmin?'':'WHERE a.unit_id=?'} ORDER BY CASE a.status WHEN 'received' THEN 0 WHEN 'reviewing' THEN 1 ELSE 2 END,a.created_at DESC`;const {results}=systemAdmin?await env.DB.prepare(sql).all():await env.DB.prepare(sql).bind(scopedUnitId).all();return json({ok:true,items:results||[]})}
-    m=url.pathname.match(/^\/api\/admin\/applications\/(\d+)$/);if(m&&method==='PATCH'){const b=await readJson(request),st=String(b.status||'');if(!['reviewing','approved','rejected','account_issued'].includes(st))return json({ok:false,error:'Trạng thái không hợp lệ.'},400);const sql=`UPDATE volunteer_applications SET status=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? ${systemAdmin?'':'AND unit_id=?'}`;const r=systemAdmin?await env.DB.prepare(sql).bind(st,user.id,+m[1]).run():await env.DB.prepare(sql).bind(st,user.id,+m[1],scopedUnitId).run();if(!r.meta?.changes)return json({ok:false,error:'Không tìm thấy hồ sơ trong phạm vi quản lý.'},404);return json({ok:true})}
+    m=url.pathname.match(/^\/api\/admin\/applications\/(\d+)$/);if(m&&method==='PATCH'){const b=await readJson(request),st=String(b.status||'');if(!['reviewing','approved','rejected','account_issued'].includes(st))return json({ok:false,error:'Trạng thái không hợp lệ.'},400);const sql=`UPDATE volunteer_applications SET status=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? ${systemAdmin?'':'AND unit_id=?'}`;const r=systemAdmin?await env.DB.prepare(sql).bind(st,user.id,+m[1]).run():await env.DB.prepare(sql).bind(st,user.id,+m[1],scopedUnitId).run();if(!r.meta?.changes)return json({ok:false,error:'Không tìm thấy hồ sơ trong phạm vi quản lý.'},404);await audit(env,user,'application.status_changed','application',+m[1],{status:st});return json({ok:true})}
     if(url.pathname==='/api/admin/tasks'&&method==='GET'){const sql=`SELECT t.*,u.full_name volunteer_name,u.unit_id,o.title opportunity_title FROM tasks t JOIN users u ON u.id=t.user_id LEFT JOIN opportunities o ON o.id=t.opportunity_id ${systemAdmin?'':'WHERE u.unit_id=?'} ORDER BY t.created_at DESC`;const {results}=systemAdmin?await env.DB.prepare(sql).all():await env.DB.prepare(sql).bind(scopedUnitId).all();return json({ok:true,items:results||[]})}
-    if(url.pathname==='/api/admin/tasks'&&method==='POST'){const b=await readJson(request),uid=+b.userId,title=clean(b.title,180);const target=await env.DB.prepare(`SELECT id,unit_id FROM users WHERE id=? AND role='volunteer' ${systemAdmin?'':'AND unit_id=?'}`).bind(uid,...(!systemAdmin?[scopedUnitId]:[])).first();if(!target||!title)return json({ok:false,error:'TNV hoặc tên nhiệm vụ không hợp lệ.'},400);const oppId=Number(b.opportunityId)||null;if(oppId){const opp=await env.DB.prepare(`SELECT id,unit_id FROM opportunities WHERE id=? ${systemAdmin?'':'AND unit_id=?'} LIMIT 1`).bind(oppId,...(!systemAdmin?[scopedUnitId]:[])).first();if(!opp)return json({ok:false,error:'Hoạt động không thuộc phạm vi quản lý.'},403);if(Number(opp.unit_id)!==Number(target.unit_id))return json({ok:false,error:'TNV và hoạt động phải thuộc cùng đơn vị.'},400);}await env.DB.prepare(`INSERT INTO tasks(user_id,opportunity_id,title,description,due_at,status,assigned_by) VALUES(?,?,?,?,?,'todo',?)`).bind(uid,oppId,title,clean(b.description,2000)||null,nullableText(b.dueAt),user.id).run();return json({ok:true})}
-    m=url.pathname.match(/^\/api\/admin\/tasks\/(\d+)$/);if(m&&method==='PATCH'){const b=await readJson(request),st=String(b.status||'');if(!['todo','doing','done','cancelled'].includes(st))return json({ok:false,error:'Trạng thái không hợp lệ.'},400);const sql=systemAdmin?`UPDATE tasks SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`:`UPDATE tasks SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id IN (SELECT id FROM users WHERE unit_id=?)`;const r=systemAdmin?await env.DB.prepare(sql).bind(st,+m[1]).run():await env.DB.prepare(sql).bind(st,+m[1],scopedUnitId).run();if(!r.meta?.changes)return json({ok:false,error:'Không tìm thấy nhiệm vụ.'},404);return json({ok:true})}
+    if(url.pathname==='/api/admin/tasks'&&method==='POST'){const b=await readJson(request),uid=+b.userId,title=clean(b.title,180);const target=await env.DB.prepare(`SELECT id,unit_id FROM users WHERE id=? AND role='volunteer' ${systemAdmin?'':'AND unit_id=?'}`).bind(uid,...(!systemAdmin?[scopedUnitId]:[])).first();if(!target||!title)return json({ok:false,error:'TNV hoặc tên nhiệm vụ không hợp lệ.'},400);const oppId=Number(b.opportunityId)||null;if(oppId){const opp=await env.DB.prepare(`SELECT id,unit_id FROM opportunities WHERE id=? ${systemAdmin?'':'AND unit_id=?'} LIMIT 1`).bind(oppId,...(!systemAdmin?[scopedUnitId]:[])).first();if(!opp)return json({ok:false,error:'Hoạt động không thuộc phạm vi quản lý.'},403);if(Number(opp.unit_id)!==Number(target.unit_id))return json({ok:false,error:'TNV và hoạt động phải thuộc cùng đơn vị.'},400);}await env.DB.prepare(`INSERT INTO tasks(user_id,opportunity_id,title,description,due_at,status,assigned_by) VALUES(?,?,?,?,?,'todo',?)`).bind(uid,oppId,title,clean(b.description,2000)||null,nullableText(b.dueAt),user.id).run();await audit(env,user,'task.created','task',null,{userId:uid,opportunityId:oppId,title});return json({ok:true})}
+    m=url.pathname.match(/^\/api\/admin\/tasks\/(\d+)$/);if(m&&method==='PATCH'){const b=await readJson(request),st=String(b.status||'');if(!['todo','doing','done','cancelled'].includes(st))return json({ok:false,error:'Trạng thái không hợp lệ.'},400);const sql=systemAdmin?`UPDATE tasks SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`:`UPDATE tasks SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id IN (SELECT id FROM users WHERE unit_id=?)`;const r=systemAdmin?await env.DB.prepare(sql).bind(st,+m[1]).run():await env.DB.prepare(sql).bind(st,+m[1],scopedUnitId).run();if(!r.meta?.changes)return json({ok:false,error:'Không tìm thấy nhiệm vụ.'},404);await audit(env,user,'task.status_changed','task',+m[1],{status:st});return json({ok:true})}
   }
   return json({ok:false,error:'Không tìm thấy chức năng.'},404);
 }
@@ -212,10 +230,13 @@ async function ensureSchema(env){
     `ALTER TABLE volunteer_profiles ADD COLUMN school_class_unit TEXT`,
     `ALTER TABLE volunteer_applications ADD COLUMN profile_photo_key TEXT`,
     `ALTER TABLE volunteer_applications ADD COLUMN profile_photo_token TEXT`,
-    `ALTER TABLE users ADD COLUMN password_iterations INTEGER NOT NULL DEFAULT 100000`
+    `ALTER TABLE users ADD COLUMN password_iterations INTEGER NOT NULL DEFAULT 100000`,
+    `ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0`
   ];
   for(const sql of alters){try{await env.DB.prepare(sql).run();}catch(e){if(!String(e).toLowerCase().includes('duplicate column')) console.log('schema compatibility:',String(e));}}
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS rate_limits(key TEXT PRIMARY KEY,count INTEGER NOT NULL DEFAULT 0,window_start INTEGER NOT NULL)`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS audit_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,actor_user_id INTEGER,action TEXT NOT NULL,entity_type TEXT,entity_id INTEGER,details TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at)`).run();
   // Nâng tài khoản admin cũ thành quản trị hệ thống, không đổi ID/tài khoản.
   try{await env.DB.prepare(`UPDATE users SET admin_scope='system' WHERE role='admin' AND (admin_scope IS NULL OR admin_scope='none') AND email=?`).bind(normalizeEmail(env.ADMIN_EMAIL||LEGACY_ADMIN_EMAIL)).run();}catch{}
 }
@@ -223,7 +244,7 @@ async function ensureSchema(env){
 async function sendApplicationEmails(env,x){
   if(!env.RESEND_API_KEY) return;
   const configured=normalizeEmail(x.opportunity.notification_email||'');
-  const fallbackReceiver=normalizeEmail(env.APPLICATION_RECEIVER_EMAIL||LEGACY_APPLICATION_RECEIVER_EMAIL);
+  const fallbackReceiver=normalizeEmail(env.APPLICATION_RECEIVER_EMAIL||DEFAULT_APPLICATION_RECEIVER_EMAIL);
   const to=(!configured || configured===normalizeEmail(env.ADMIN_EMAIL||LEGACY_ADMIN_EMAIL)) ? fallbackReceiver : configured;
   const headers={'Authorization':`Bearer ${env.RESEND_API_KEY}`,'Content-Type':'application/json'};
   const from=env.MAIL_FROM||DEFAULT_MAIL_FROM;
@@ -307,13 +328,13 @@ Thông tin dưới đây được tự động điền theo nội dung bạn đ�
 <tr>
 <td width="49%" valign="top" style="padding:18px;border:1px solid #e4e8ef;border-radius:17px;background:#ffffff;">
 <div style="font-size:12px;color:#7b8794;font-weight:800;letter-spacing:.8px;text-transform:uppercase;">CHƯƠNG TRÌNH</div>
-<div style="margin-top:8px;font-size:16px;font-weight:800;color:#552064;line-height:1.45;">{{PROGRAM_NAME}}</div>
+<div style="margin-top:8px;font-size:16px;font-weight:800;color:#064ca8;line-height:1.45;">{{PROGRAM_NAME}}</div>
 <div style="margin-top:6px;font-size:13px;color:#75879a;line-height:1.55;">{{ACTIVITY_TYPE}}</div>
 </td>
 <td width="2%">&nbsp;</td>
 <td width="49%" valign="top" style="padding:18px;border:1px solid #e4e8ef;border-radius:17px;background:#ffffff;">
 <div style="font-size:12px;color:#7b8794;font-weight:800;letter-spacing:.8px;text-transform:uppercase;">VAI TRÒ</div>
-<div style="margin-top:8px;font-size:16px;font-weight:800;color:#552064;line-height:1.45;">{{ROLE_NAME}}</div>
+<div style="margin-top:8px;font-size:16px;font-weight:800;color:#064ca8;line-height:1.45;">{{ROLE_NAME}}</div>
 <div style="margin-top:6px;font-size:13px;color:#75879a;line-height:1.55;">{{TEAM_NAME}}</div>
 </td>
 </tr>
@@ -323,13 +344,13 @@ Thông tin dưới đây được tự động điền theo nội dung bạn đ�
 <tr>
 <td width="49%" valign="top" style="padding:18px;border:1px solid #e4e8ef;border-radius:17px;background:#ffffff;">
 <div style="font-size:12px;color:#7b8794;font-weight:800;letter-spacing:.8px;text-transform:uppercase;">THỜI GIAN</div>
-<div style="margin-top:8px;font-size:16px;font-weight:800;color:#552064;line-height:1.45;">{{START_TIME}}</div>
+<div style="margin-top:8px;font-size:16px;font-weight:800;color:#064ca8;line-height:1.45;">{{START_TIME}}</div>
 <div style="margin-top:6px;font-size:13px;color:#75879a;line-height:1.55;">{{END_TIME}}</div>
 </td>
 <td width="2%">&nbsp;</td>
 <td width="49%" valign="top" style="padding:18px;border:1px solid #e4e8ef;border-radius:17px;background:#ffffff;">
 <div style="font-size:12px;color:#7b8794;font-weight:800;letter-spacing:.8px;text-transform:uppercase;">ĐỊA ĐIỂM / HÌNH THỨC</div>
-<div style="margin-top:8px;font-size:16px;font-weight:800;color:#552064;line-height:1.45;">{{LOCATION}}</div>
+<div style="margin-top:8px;font-size:16px;font-weight:800;color:#064ca8;line-height:1.45;">{{LOCATION}}</div>
 <div style="margin-top:6px;font-size:13px;color:#75879a;line-height:1.55;">{{MODE}}</div>
 </td>
 </tr>
@@ -359,7 +380,7 @@ Thông tin dưới đây được tự động điền theo nội dung bạn đ�
 <tr>
 <td style="padding:9px 0;color:#687d90;font-size:14px;">Trạng thái</td>
 <td align="right" style="padding:9px 0;">
-<span style="display:inline-block;padding:8px 13px;border-radius:999px;background:#f2e8ff;color:#672b8b;font-size:12px;font-weight:800;">{{STATUS}}</span>
+<span style="display:inline-block;padding:8px 13px;border-radius:999px;background:#eaf5ff;color:#0758b7;font-size:12px;font-weight:800;">{{STATUS}}</span>
 </td>
 </tr>
 </table>
@@ -368,14 +389,14 @@ Thông tin dưới đây được tự động điền theo nội dung bạn đ�
 </table>
 
 <!-- DYNAMIC NOTE -->
-<div style="margin-top:20px;padding:18px 20px;border-radius:16px;background:linear-gradient(100deg,#faf3ff,#fff4f0);border-left:4px solid #a63886;">
-<div style="font-size:13px;font-weight:800;color:#6b2d73;margin-bottom:6px;">THÔNG TIN DÀNH CHO TÌNH NGUYỆN VIÊN</div>
+<div style="margin-top:20px;padding:18px 20px;border-radius:16px;background:linear-gradient(100deg,#f0f8ff,#f5fbff);border-left:4px solid #087de9;">
+<div style="font-size:13px;font-weight:800;color:#0758b7;margin-bottom:6px;">THÔNG TIN DÀNH CHO TÌNH NGUYỆN VIÊN</div>
 <div style="font-size:14px;line-height:1.7;color:#65546b;">{{VOLUNTEER_NOTE}}</div>
 </div>
 
 <!-- CTA -->
 <div style="text-align:center;padding:31px 0 15px;">
-<a href="{{ACTION_URL}}" style="display:inline-block;padding:15px 31px;border-radius:13px;background:linear-gradient(100deg,#762b82,#c23872,#f4511e);color:#fff;text-decoration:none;font-size:14px;font-weight:800;letter-spacing:.3px;box-shadow:0 9px 22px rgba(174,52,91,.22);">{{ACTION_LABEL}}</a>
+<a href="{{ACTION_URL}}" style="display:inline-block;padding:15px 31px;border-radius:13px;background:linear-gradient(100deg,#0758b7,#087de9,#20bfe8);color:#fff;text-decoration:none;font-size:14px;font-weight:800;letter-spacing:.3px;box-shadow:0 9px 22px rgba(174,52,91,.22);">{{ACTION_LABEL}}</a>
 </div>
 
 <p style="margin:0;text-align:center;color:#738597;font-size:13px;line-height:1.65;">
@@ -395,15 +416,15 @@ Thông tin đăng ký của bạn đã được gửi đến địa chỉ email 
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
 <tr>
 <td width="49%" valign="top" style="padding:18px;border:1px solid #dbe7f0;border-radius:17px;background:linear-gradient(145deg,#fff,#faf4ff);">
-<div style="font-size:16px;font-weight:800;color:#552064;margin-bottom:7px;">Cổng Thông tin</div>
+<div style="font-size:16px;font-weight:800;color:#064ca8;margin-bottom:7px;">Cổng Thông tin</div>
 <div style="font-size:13px;line-height:1.55;color:#687d90;margin-bottom:8px;">Tra cứu thông tin, đăng ký và trạng thái xử lý.</div>
-<a href="https://ctt.skyfirst.io.vn" style="font-size:12px;font-weight:800;color:#f4511e;text-decoration:none;">ctt.skyfirst.io.vn</a>
+<a href="https://ctt.skyfirst.io.vn" style="font-size:12px;font-weight:800;color:#20bfe8;text-decoration:none;">ctt.skyfirst.io.vn</a>
 </td>
 <td width="2%">&nbsp;</td>
 <td width="49%" valign="top" style="padding:18px;border:1px solid #dbe7f0;border-radius:17px;background:linear-gradient(145deg,#fff,#fff5f8);">
-<div style="font-size:16px;font-weight:800;color:#552064;margin-bottom:7px;">Cổng Thành viên</div>
+<div style="font-size:16px;font-weight:800;color:#064ca8;margin-bottom:7px;">Cổng Thành viên</div>
 <div style="font-size:13px;line-height:1.55;color:#687d90;margin-bottom:8px;">Không gian dành cho thành viên và phối hợp nội bộ.</div>
-<a href="https://member.skyfirst.io.vn" style="font-size:12px;font-weight:800;color:#f4511e;text-decoration:none;">member.skyfirst.io.vn</a>
+<a href="https://member.skyfirst.io.vn" style="font-size:12px;font-weight:800;color:#20bfe8;text-decoration:none;">member.skyfirst.io.vn</a>
 </td>
 </tr>
 
@@ -411,15 +432,15 @@ Thông tin đăng ký của bạn đã được gửi đến địa chỉ email 
 
 <tr>
 <td width="49%" valign="top" style="padding:18px;border:1px solid #dbe7f0;border-radius:17px;background:linear-gradient(145deg,#fff,#f4f8ff);">
-<div style="font-size:16px;font-weight:800;color:#552064;margin-bottom:7px;">Cổng Tình nguyện viên</div>
+<div style="font-size:16px;font-weight:800;color:#064ca8;margin-bottom:7px;">Cổng Tình nguyện viên</div>
 <div style="font-size:13px;line-height:1.55;color:#687d90;margin-bottom:8px;">Thông tin, lịch hoạt động và nội dung dành cho TNV.</div>
-<a href="https://tnv.skyfirst.io.vn" style="font-size:12px;font-weight:800;color:#f4511e;text-decoration:none;">tnv.skyfirst.io.vn</a>
+<a href="https://tnv.skyfirst.io.vn" style="font-size:12px;font-weight:800;color:#20bfe8;text-decoration:none;">tnv.skyfirst.io.vn</a>
 </td>
 <td width="2%">&nbsp;</td>
 <td width="49%" valign="top" style="padding:18px;border:1px solid #dbe7f0;border-radius:17px;background:linear-gradient(145deg,#fff,#fff8ef);">
-<div style="font-size:16px;font-weight:800;color:#552064;margin-bottom:7px;">Trang Sky First</div>
+<div style="font-size:16px;font-weight:800;color:#064ca8;margin-bottom:7px;">Trang Sky First</div>
 <div style="font-size:13px;line-height:1.55;color:#687d90;margin-bottom:8px;">Thông tin chung, hoạt động và nội dung công khai.</div>
-<a href="https://skyfirst.io.vn" style="font-size:12px;font-weight:800;color:#f4511e;text-decoration:none;">skyfirst.io.vn</a>
+<a href="https://skyfirst.io.vn" style="font-size:12px;font-weight:800;color:#20bfe8;text-decoration:none;">skyfirst.io.vn</a>
 </td>
 </tr>
 </table>
@@ -431,7 +452,7 @@ Thông tin đăng ký của bạn đã được gửi đến địa chỉ email 
 <!-- NOTE -->
 <tr>
 <td style="padding:0 42px 30px;">
-<div style="padding:17px 19px;border-radius:15px;background:#f8f4fb;border-left:4px solid #8b3a91;">
+<div style="padding:17px 19px;border-radius:15px;background:#f3f8fd;border-left:4px solid #0758b7;">
 <p style="margin:0;color:#66536a;font-size:13px;line-height:1.7;"><strong>Lưu ý:</strong> Đây là email tự động. Vui lòng không phản hồi trực tiếp email này.</p>
 </div>
 </td>
@@ -439,7 +460,7 @@ Thông tin đăng ký của bạn đã được gửi đến địa chỉ email 
 
 <!-- FOOTER -->
 <tr>
-<td style="padding:24px 30px;text-align:center;background:linear-gradient(110deg,#35145d,#55206e,#762b5f);color:#dcd0e5;">
+<td style="padding:24px 30px;text-align:center;background:linear-gradient(110deg,#062f78,#064ca8,#087de9);color:#dcd0e5;">
 <div style="font-size:13px;font-weight:700;color:#fff;">Sky First Network</div>
 <div style="margin-top:6px;font-size:12px;line-height:1.65;">Cổng Tình nguyện viên · tnv.skyfirst.io.vn</div>
 <div style="margin-top:11px;font-size:11px;opacity:.75;">© 2026 Sky First Network. All rights reserved.</div>
@@ -462,7 +483,8 @@ function opportunityTypeName(t){return ({class:'Lớp học',training:'Đào t�
 function formatViDateTime(v){if(!v)return '';const d=new Date(v);if(Number.isNaN(d.getTime()))return String(v);return new Intl.DateTimeFormat('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',dateStyle:'short',timeStyle:'short'}).format(d);}
 async function newApplicationCode(env){for(let i=0;i<5;i++){const d=new Date(), code=`TNV-${d.getFullYear()}-${randomToken(4).toUpperCase()}`;const e=await env.DB.prepare('SELECT id FROM volunteer_applications WHERE application_code=?').bind(code).first();if(!e)return code;}return `TNV-${Date.now()}`;}
 async function requireUser(request,env){const token=getCookie(request,'sfn_session');if(!token)return null;const h=await hashSessionToken(token);return await env.DB.prepare(`SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>? AND u.status='active' LIMIT 1`).bind(h,new Date().toISOString()).first();}
-function publicUser(u){return{id:u.id,email:u.email,fullName:u.full_name,role:u.role,status:u.status,unitId:u.unit_id||null,adminScope:u.admin_scope||'none'};}
+function publicUser(u){return{id:u.id,email:u.email,fullName:u.full_name,role:u.role,status:u.status,unitId:u.unit_id||null,adminScope:u.admin_scope||'none',mustChangePassword:Boolean(Number(u.must_change_password||0))};}
+async function audit(env,user,action,entityType=null,entityId=null,details=null){try{await env.DB.prepare('INSERT INTO audit_logs(actor_user_id,action,entity_type,entity_id,details) VALUES(?,?,?,?,?)').bind(user?.id||null,action,entityType,entityId,details?JSON.stringify(details):null).run();}catch(e){console.error('audit log failed',e);}}
 async function hashPassword(password,saltB64=null,iterations=PBKDF2_ITERATIONS){const salt=saltB64?b64ToBytes(saltB64):crypto.getRandomValues(new Uint8Array(16));const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(password),'PBKDF2',false,['deriveBits']);const bits=await crypto.subtle.deriveBits({name:'PBKDF2',hash:'SHA-256',salt,iterations},key,256);return{hash:bytesToB64(new Uint8Array(bits)),salt:bytesToB64(salt)};}
 async function verifyPassword(p,s,h,iterations=LEGACY_PBKDF2_ITERATIONS){return timingSafeEqual((await hashPassword(p,s,iterations)).hash,h);}
 async function hashSessionToken(t){const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(t));return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('');}
@@ -473,6 +495,6 @@ function getCookie(req,name){const c=req.headers.get('Cookie')||'';for(const p o
 function sessionCookie(v,days){return `sfn_session=${encodeURIComponent(v)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.max(0,Math.floor(days*86400))}`;}
 async function readJson(r){try{return await r.json();}catch{return {};}} function clean(v,n=500){return String(v??'').trim().slice(0,n);} function nullableText(v){const s=String(v??'').trim();return s||null;} function normalizeEmail(v){return String(v??'').trim().toLowerCase();} function isValidEmail(v){return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);} function validatePassword(v){if(v.length<10)return'Mật khẩu cần ít nhất 10 ký tự.';return null;}
 function clientIp(r){return clean(r.headers.get('CF-Connecting-IP')||r.headers.get('X-Forwarded-For')?.split(',')[0]||'unknown',100);}
-function validRequestOrigin(r,env){const origin=r.headers.get('Origin');if(!origin)return true;try{const allowed=new URL(env.APP_URL||'https://tnv.skyfirst.io.vn').origin;return new URL(origin).origin===allowed;}catch{return false;}}
+function validRequestOrigin(r,env){const origin=r.headers.get('Origin');if(!origin)return true;try{const incoming=new URL(origin).origin;const requestOrigin=new URL(r.url).origin;if(incoming===requestOrigin)return true;if(env.APP_URL&&incoming===new URL(env.APP_URL).origin)return true;return false;}catch{return false;}}
 async function rateLimit(env,key,limit,windowSeconds){const now=Math.floor(Date.now()/1000),row=await env.DB.prepare('SELECT count,window_start FROM rate_limits WHERE key=?').bind(key).first();if(!row||now-Number(row.window_start)>=windowSeconds){await env.DB.prepare('INSERT INTO rate_limits(key,count,window_start) VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET count=1,window_start=excluded.window_start').bind(key,now).run();return{ok:true,retryAfter:0};}if(Number(row.count)>=limit)return{ok:false,retryAfter:Math.max(1,windowSeconds-(now-Number(row.window_start)))};await env.DB.prepare('UPDATE rate_limits SET count=count+1 WHERE key=?').bind(key).run();return{ok:true,retryAfter:0};}
 function json(data,status=200,headers={}){return new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...headers}});}

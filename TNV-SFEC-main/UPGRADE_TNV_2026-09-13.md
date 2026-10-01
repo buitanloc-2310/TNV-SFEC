@@ -6,4 +6,4 @@
 4. Resend cần xác minh domain `skyfirst.io.vn` để gửi từ `Sky First · Tình nguyện viên <tnv@skyfirst.io.vn>`.
 5. Deploy: `npm install` rồi `npm run check` rồi `npm run deploy`.
 6. Không cần chạy ALTER thủ công: Worker tự thêm `profile_photo_key` và `profile_photo_token` khi khởi động.
-7. Email tiếp nhận hồ sơ mặc định: `nhansu.sfn@gmail.com`. Nếu `units.notification_email` cũ là `skyfirst.ec@gmail.com`, hệ thống tự chuyển sang email Nhân sự.
+7. Email tiếp nhận hồ sơ mặc định: `tnv@skyfirst.io.vn`. Nếu `units.notification_email` cũ là `skyfirst.ec@gmail.com`, hệ thống tự chuyển sang email Nhân sự.

@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS users (
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','locked')),
   unit_id INTEGER,
   admin_scope TEXT NOT NULL DEFAULT 'none' CHECK (admin_scope IN ('none','unit','system')),
+  password_iterations INTEGER NOT NULL DEFAULT 310000,
+  must_change_password INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -150,3 +152,8 @@ CREATE INDEX IF NOT EXISTS idx_applications_code ON volunteer_applications(appli
 CREATE INDEX IF NOT EXISTS idx_applications_unit ON volunteer_applications(unit_id);
 CREATE INDEX IF NOT EXISTS idx_applications_status ON volunteer_applications(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
+
+
+CREATE TABLE IF NOT EXISTS rate_limits (key TEXT PRIMARY KEY,count INTEGER NOT NULL DEFAULT 0,window_start INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT,actor_user_id INTEGER,action TEXT NOT NULL,entity_type TEXT,entity_id INTEGER,details TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(actor_user_id) REFERENCES users(id) ON DELETE SET NULL);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);

@@ -20,5 +20,5 @@ MAIL_FROM = "Sky First · Tình nguyện viên <tnv@skyfirst.io.vn>"
 APP_URL = "https://tnv.skyfirst.io.vn"
 
 ADMIN_EMAIL = "skyfirst.ec@gmail.com"
-APPLICATION_RECEIVER_EMAIL = "nhansu.sfn@gmail.com"
+APPLICATION_RECEIVER_EMAIL = "tnv@skyfirst.io.vn"
 # SETUP_SECRET phải cấu hình bằng: wrangler secret put SETUP_SECRET

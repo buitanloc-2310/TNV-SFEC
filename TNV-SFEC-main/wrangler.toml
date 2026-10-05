@@ -1,0 +1,25 @@
+name = "sfn-tnv-portal"
+main = "src/index.js"
+compatibility_date = "2026-08-31"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "tnv-sfec"
+database_id = "d939abd6-c877-4234-be69-60b5a69d52a8"
+
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "tnv-sfn-files"
+
+[vars]
+MAIL_FROM = "Sky First · Tình nguyện viên <tnv@skyfirst.io.vn>"
+APP_URL = "https://tnv.skyfirst.io.vn"
+
+ADMIN_EMAIL = "skyfirst.ec@gmail.com"
+APPLICATION_RECEIVER_EMAIL = "tnv@skyfirst.io.vn"
+# SETUP_SECRET phải cấu hình bằng: wrangler secret put SETUP_SECRET

@@ -1,6 +1,6 @@
-# Cổng Tình nguyện viên Sky First
+# Trung Tâm Tình Nguyện Viên Sky First
 
-Phiên bản hoàn thiện giao diện công khai + khu vực nội bộ cho **Mạng lưới Giáo dục & Phát triển Cộng đồng Sky First (SFN)** và các đơn vị thuộc hệ thống.
+**Trung Tâm Tình Nguyện Viên Sky First — Sky First Volunteer Center**: hệ thống công khai và nội bộ để kết nối cơ hội, tiếp nhận hồ sơ và hỗ trợ tình nguyện viên trong hệ thống Sky First.
 
 ## Giữ nguyên hạ tầng hiện hữu
 - Worker: `sfn-tnv-portal`
@@ -12,16 +12,16 @@ Phiên bản hoàn thiện giao diện công khai + khu vực nội bộ cho **M
 
 ## Chức năng chính
 - Website công khai: Trang chủ, Giới thiệu, Cơ hội TNV, Đơn vị, Quy trình, Tra cứu GCN.
-- Cơ hội công khai không cần đăng nhập; 9 cơ hội SFEC được tự bổ sung nếu chưa tồn tại.
+- Cơ hội công khai không cần đăng nhập; quản trị viên quản lý danh sách cơ hội theo đơn vị.
 - Hồ sơ TNV công khai, bắt buộc họ tên, email, số điện thoại, trường/lớp/đơn vị và **ảnh cá nhân**; ảnh JPG/PNG/WEBP tối đa 5 MB được lưu trong R2; tạo mã hồ sơ `TNV-...`.
 - Tài khoản chỉ được cấp sau khi quản trị xét hồ sơ.
 - Quản trị hệ thống và quản trị đơn vị có phạm vi tách biệt; quản trị đơn vị không được sửa đơn vị khác.
 - Tài khoản TNV chỉ hiển thị các chức năng nội bộ có luồng dữ liệu thật (tổng quan, nhiệm vụ).
 - Không còn các mục UI: Đóng góp, Giấy chứng nhận của tôi, Tài liệu TNV, Thông báo của tôi.
-- Tra cứu **Giấy chứng nhận** công khai, không yêu cầu đăng nhập; không có Giấy xác nhận trong Cổng TNV.
+- Tra cứu **Giấy chứng nhận** công khai, không yêu cầu đăng nhập; không có Giấy xác nhận trong Trung Tâm Tình Nguyện Viên Sky First.
 
 ## Email hồ sơ
-Worker gửi 2 email qua Resend: email tiếp nhận hồ sơ và email HTML xác nhận cho người đăng ký. Email tiếp nhận mặc định là `tnv@skyfirst.io.vn` (nếu dữ liệu cũ còn `skyfirst.ec@gmail.com` hệ thống cũng tự chuyển sang email Nhân sự). Người gửi mặc định là `Sky First · Tình nguyện viên <tnv@skyfirst.io.vn>`. Cấu hình secret `RESEND_API_KEY`; tên miền `skyfirst.io.vn` phải được xác minh trong Resend.
+Worker gửi 2 email qua Resend: email tiếp nhận hồ sơ và email HTML xác nhận cho người đăng ký. Email tiếp nhận mặc định là `tnv@skyfirst.io.vn` (nếu dữ liệu cũ còn `skyfirst.ec@gmail.com` hệ thống cũng tự chuyển sang email Nhân sự). Người gửi mặc định là `Sky First Volunteer Center <tnv@skyfirst.io.vn>`. Cấu hình secret `RESEND_API_KEY`; tên miền `skyfirst.io.vn` phải được xác minh trong Resend.
 
 ## Tra cứu GCN trung tâm
 Có thể đặt biến `CERTIFICATE_LOOKUP_URL` trỏ tới endpoint tra cứu GCN của Cổng CTT trung tâm. Khi chưa cấu hình, Worker chỉ dùng bảng GCN cũ để tương thích và không gắn GCN vào tài khoản TNV.
@@ -51,7 +51,7 @@ Nếu `wrangler.toml` nằm ngay tại Root directory đã chọn:
 - Root directory: thư mục chứa trực tiếp `wrangler.toml`, `public/`, `src/`
 
 ### Tra cứu GCN trung tâm
-Đặt biến `CERTIFICATE_LOOKUP_URL` về endpoint tra cứu GCN trung tâm của Sky First. Cổng TNV sẽ chuyển truy vấn GCN tới nguồn trung tâm thay vì tạo bản sao dữ liệu.
+Đặt biến `CERTIFICATE_LOOKUP_URL` về endpoint tra cứu GCN trung tâm của Sky First. Trung Tâm Tình Nguyện Viên Sky First sẽ chuyển truy vấn GCN tới nguồn trung tâm thay vì tạo bản sao dữ liệu.
 
 
 ## R2 lưu ảnh hồ sơ

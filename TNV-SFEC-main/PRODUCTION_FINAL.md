@@ -7,10 +7,10 @@
 
 ## Hoàn thiện
 - Hardening đỏ/cam: setup, rate limit, ảnh hồ sơ, internal errors, Origin/CSRF baseline, phân quyền nhiệm vụ.
-- Mật khẩu mới dùng PBKDF2 310k; tài khoản mới có cờ đổi mật khẩu lần đầu.
+- Mật khẩu mới dùng PBKDF2 100.000 vòng; tài khoản mới có cờ đổi mật khẩu lần đầu.
 - Có API/UI đổi mật khẩu; đổi xong thu hồi các phiên khác.
 - Audit log nền tảng + trang xem nhật ký cho System Admin.
 - Schema compatibility chỉ chạy một lần mỗi Worker isolate, không lặp ở từng API call trong cùng isolate.
 - Email và nhận diện chuyển sang xanh/navy Sky First.
-- Tên giao diện: Sky First Volunteer Center / Trung tâm Tình nguyện viên.
+- Tên giao diện: Trung Tâm Tình Nguyện Viên Sky First / Sky First Volunteer Center.
 - Email nhận hồ sơ mặc định: tnv@skyfirst.io.vn; có thể override bằng ENV.

@@ -17,7 +17,7 @@ binding = "FILES"
 bucket_name = "tnv-sfn-files"
 
 [vars]
-MAIL_FROM = "Sky First · Tình nguyện viên <tnv@skyfirst.io.vn>"
+MAIL_FROM = "Sky First Volunteer Center <tnv@skyfirst.io.vn>"
 APP_URL = "https://tnv.skyfirst.io.vn"
 
 ADMIN_EMAIL = "skyfirst.ec@gmail.com"

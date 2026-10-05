@@ -1,1 +1,17 @@
-{"name":"Cổng Tình nguyện viên - Sky First Network","short_name":"TNV Sky First","start_url":"/","display":"standalone","background_color":"#ffffff","theme_color":"#0b3477","icons":[{"src":"/assets/logo-sfn.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}]}
+{
+  "name": "Trung Tâm Tình Nguyện Viên Sky First",
+  "short_name": "Sky First TNV",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f7fb",
+  "theme_color": "#081f3d",
+  "icons": [
+    {
+      "src": "/assets/logo-sfn.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "description": "Trung Tâm Tình Nguyện Viên Sky First — Sky First Volunteer Center"
+}

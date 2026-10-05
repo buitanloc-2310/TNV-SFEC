@@ -6,7 +6,7 @@ Bản này giữ nguyên dữ liệu hiện hữu và không yêu cầu reset D1
 1. Dữ liệu GCN trực tiếp của website Sky First (Firestore).
 2. Cổng Thông tin Sky First: https://ctt.skyfirst.io.vn/api/lookup/certificate
 3. SFEC: https://ctt.sfec.skyfirst.io.vn/api/lookup/certificate
-4. Cổng TNV: https://tnv.skyfirst.io.vn/api/public/certificates/lookup
+4. Trung Tâm Tình Nguyện Viên Sky First: https://tnv.skyfirst.io.vn/api/public/certificates/lookup
 5. Cổng Thành viên: https://member.skyfirst.io.vn/api/public/verify (chỉ nhận kết quả type=certificate)
 6. Nhà Hán Ngữ: https://ctt.nhahanngu.io.vn/api/lookup/certificate
 

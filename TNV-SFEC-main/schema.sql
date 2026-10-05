@@ -1,6 +1,6 @@
 PRAGMA foreign_keys = ON;
 
--- Cổng Tình nguyện viên Sky First. Lược đồ này chỉ dùng khi tạo CSDL mới.
+-- Trung Tâm Tình Nguyện Viên Sky First. Lược đồ này chỉ dùng khi tạo CSDL mới.
 -- Với CSDL hiện hữu, dùng migration trong thư mục migrations; Worker chỉ giữ lớp tương thích để tránh lỗi khi nâng cấp.
 -- Không đổi database_id, không xoá bảng và không đặt lại bất kỳ ID hiện hữu nào.
 

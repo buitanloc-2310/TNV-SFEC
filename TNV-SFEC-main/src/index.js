@@ -1,12 +1,10 @@
 const LEGACY_ADMIN_EMAIL = 'skyfirst.ec@gmail.com';
 const DEFAULT_APPLICATION_RECEIVER_EMAIL = 'tnv@skyfirst.io.vn';
-const DEFAULT_MAIL_FROM = 'Sky First · Tình nguyện viên <tnv@skyfirst.io.vn>';
+const DEFAULT_MAIL_FROM = 'Sky First Volunteer Center <tnv@skyfirst.io.vn>';
 const MAX_PROFILE_PHOTO_BYTES = 5 * 1024 * 1024;
 const SESSION_DAYS = 7;
 const LEGACY_PBKDF2_ITERATIONS = 100000;
 const PBKDF2_ITERATIONS = 100000; // Cloudflare Workers Web Crypto limit. Verify stored hashes with their original iteration count.
-const SFEC_CODE = 'SFEC';
-const SFEC_NAME = 'Câu lạc bộ Tiếng Anh The Sky First (SFEC)';
 
 let schemaReadyPromise;
 
@@ -17,7 +15,7 @@ export default {
       const response = url.pathname.startsWith('/api/') ? await api(request, env, url) : await env.ASSETS.fetch(request);
       return withSecurityHeaders(response, url.pathname);
     } catch (error) {
-      console.error('SFN TNV Portal Error:', error);
+      console.error('Sky First Volunteer Center Error:', error);
       return json({ ok:false, error:'Lỗi hệ thống. Vui lòng thử lại sau.' }, 500);
     }
   }
@@ -269,7 +267,7 @@ async function sendApplicationEmails(env,x){
   const profileImageBlock='';
   const applicantHtml=renderTemplate(TNV_CONFIRMATION_EMAIL_TEMPLATE,{
     FULL_NAME:escapeHtml(x.fullName), VOLUNTEER_ID:escapeHtml(x.code), PROGRAM_NAME:escapeHtml(x.opportunity.title),
-    ACTIVITY_TYPE:escapeHtml(opportunityTypeName(x.opportunity.type)), ROLE_NAME:'Tình nguyện viên', TEAM_NAME:escapeHtml(x.opportunity.unit_name||'Sky First Network'),
+    ACTIVITY_TYPE:escapeHtml(opportunityTypeName(x.opportunity.type)), ROLE_NAME:'Tình nguyện viên', TEAM_NAME:escapeHtml(x.opportunity.unit_name||'Trung Tâm Tình Nguyện Viên Sky First'),
     START_TIME:escapeHtml(formatViDateTime(x.opportunity.start_at)||'Theo thông báo của Ban Tổ chức'), END_TIME:escapeHtml(formatViDateTime(x.opportunity.end_at)||''),
     LOCATION:'Theo thông tin chương trình', MODE:escapeHtml(x.opportunity.type==='class'?'Theo hình thức lớp học':'Theo kế hoạch hoạt động'),
     EMAIL:escapeHtml(x.email), PHONE:escapeHtml(x.phone), SUBMITTED_AT:escapeHtml(formatViDateTime(new Date().toISOString())), STATUS:'ĐÃ TIẾP NHẬN',
@@ -277,10 +275,10 @@ async function sendApplicationEmails(env,x){
     ACTION_URL:'https://tnv.skyfirst.io.vn/#application-lookup', ACTION_LABEL:'TRA CỨU HỒ SƠ TNV', PROFILE_IMAGE_BLOCK:profileImageBlock
   });
   const adminText=`Có hồ sơ TNV mới\nMã hồ sơ: ${x.code}\nCơ hội: ${x.opportunity.title}\nHọ tên: ${x.fullName}\nEmail: ${x.email}\nSố điện thoại: ${x.phone}\nTrường/Lớp/Đơn vị: ${x.school}`;
-  const applicantText=`Sky First Network đã tiếp nhận đăng ký tình nguyện viên của bạn.\nMã hồ sơ: ${x.code}\nChương trình: ${x.opportunity.title}\nTra cứu tại: ${appUrl}`;
+  const applicantText=`Trung Tâm Tình Nguyện Viên Sky First đã tiếp nhận đăng ký tình nguyện viên của bạn.\nMã hồ sơ: ${x.code}\nChương trình: ${x.opportunity.title}\nTra cứu tại: ${appUrl}`;
   const results=await Promise.allSettled([
     fetch('https://api.resend.com/emails',{method:'POST',headers,body:JSON.stringify({from,to:[to],subject:`[TNV] Hồ sơ mới ${x.code}`,text:adminText})}),
-    fetch('https://api.resend.com/emails',{method:'POST',headers,body:JSON.stringify({from,to:[x.email],subject:`Sky First | Xác nhận đăng ký ${x.code}`,html:applicantHtml,text:applicantText})})
+    fetch('https://api.resend.com/emails',{method:'POST',headers,body:JSON.stringify({from,to:[x.email],subject:`Sky First Volunteer Center | Xác nhận đăng ký ${x.code}`,html:applicantHtml,text:applicantText})})
   ]);
   const failures=[];
   for(const [i,result] of results.entries()){
@@ -294,7 +292,7 @@ const TNV_CONFIRMATION_EMAIL_TEMPLATE = String.raw`<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sky First Network — Xác nhận Tình nguyện viên</title>
+<title>Trung Tâm Tình Nguyện Viên Sky First — Xác nhận Tình nguyện viên</title>
 </head>
 <body style="margin:0;padding:0;background:#f4f7fb;font-family:Arial,Helvetica,sans-serif;color:#203244;">
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f4f7fb;padding:32px 12px;">
@@ -306,7 +304,7 @@ const TNV_CONFIRMATION_EMAIL_TEMPLATE = String.raw`<!doctype html>
 <!-- HERO -->
 <tr>
 <td style="padding:40px 42px;background:linear-gradient(120deg,#052f78 0%,#075bc4 48%,#13aee8 100%);color:#ffffff;">
-<div style="font-size:12px;font-weight:800;letter-spacing:1.8px;text-transform:uppercase;opacity:.92;">SKY FIRST NETWORK</div>
+<div style="font-size:12px;font-weight:800;letter-spacing:1.8px;text-transform:uppercase;opacity:.92;">SKY FIRST VOLUNTEER CENTER</div>
 <h1 style="margin:10px 0 8px;font-size:30px;line-height:1.25;">Xác nhận đăng ký Tình nguyện viên</h1>
 <p style="margin:0;font-size:15px;line-height:1.7;opacity:.95;">Thông tin đăng ký của bạn đã được hệ thống tiếp nhận.</p>
 </td>
@@ -325,7 +323,7 @@ Xin chào <strong style="color:#7e22ce;">{{FULL_NAME}}</strong>,
 </p>
 
 <p style="margin:0 0 24px;font-size:16px;line-height:1.75;">
-Sky First Network xác nhận đã tiếp nhận đăng ký của bạn cho
+Trung Tâm Tình Nguyện Viên Sky First xác nhận đã tiếp nhận đăng ký của bạn cho
 <strong>{{PROGRAM_NAME}}</strong>.
 Thông tin dưới đây được tự động điền theo nội dung bạn đã đăng ký.
 </p>
@@ -451,7 +449,7 @@ Thông tin đăng ký của bạn đã được gửi đến địa chỉ email 
 
 <tr>
 <td width="49%" valign="top" style="padding:18px;border:1px solid #dbe7f0;border-radius:17px;background:linear-gradient(145deg,#fff,#f4f8ff);">
-<div style="font-size:16px;font-weight:800;color:#064ca8;margin-bottom:7px;">Cổng Tình nguyện viên</div>
+<div style="font-size:16px;font-weight:800;color:#064ca8;margin-bottom:7px;">Trung Tâm Tình Nguyện Viên Sky First<br><span style="font-size:11px;font-weight:400;">Sky First Volunteer Center</span></div>
 <div style="font-size:13px;line-height:1.55;color:#687d90;margin-bottom:8px;">Thông tin, lịch hoạt động và nội dung dành cho TNV.</div>
 <a href="https://tnv.skyfirst.io.vn" style="font-size:12px;font-weight:800;color:#20bfe8;text-decoration:none;">tnv.skyfirst.io.vn</a>
 </td>
@@ -480,9 +478,9 @@ Thông tin đăng ký của bạn đã được gửi đến địa chỉ email 
 <!-- FOOTER -->
 <tr>
 <td style="padding:24px 30px;text-align:center;background:linear-gradient(110deg,#062f78,#064ca8,#087de9);color:#dcd0e5;">
-<div style="font-size:13px;font-weight:700;color:#fff;">Sky First Network</div>
-<div style="margin-top:6px;font-size:12px;line-height:1.65;">Cổng Tình nguyện viên · tnv.skyfirst.io.vn</div>
-<div style="margin-top:11px;font-size:11px;opacity:.75;">© 2026 Sky First Network. All rights reserved.</div>
+<div style="font-size:13px;font-weight:700;color:#fff;">Trung Tâm Tình Nguyện Viên Sky First<br><span style="font-size:11px;font-weight:400;">Sky First Volunteer Center</span></div>
+<div style="margin-top:6px;font-size:12px;line-height:1.65;">Trung Tâm Tình Nguyện Viên Sky First · tnv.skyfirst.io.vn</div>
+<div style="margin-top:11px;font-size:11px;opacity:.75;">© 2026 Sky First Volunteer Center. All rights reserved.</div>
 </td>
 </tr>
 
